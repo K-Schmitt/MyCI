@@ -9,13 +9,14 @@ Every request line is appended to <request-log>.
 """
 import json
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT, SCENARIO, SHA, LOG = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
 OTHER_SHA = "f" * 40
 polls = {"n": 0}
 
-DEPLOY_ERRORS = {"deploy-401": 401, "deploy-403": 403, "deploy-404": 404, "deploy-500": 500}
+DEPLOY_ERRORS = {"deploy-401": 401, "deploy-403": 403, "deploy-404": 404, "deploy-500": 500, "queue-full": 429}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -42,6 +43,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {"object": {"sha": head}})
         if self.path.startswith("/api/v1/deployments/"):
             polls["n"] += 1
+            if SCENARIO == "already-queued":
+                return self.reply(404, {"message": "Deployment not found."})
+            if SCENARIO == "poll-hang":
+                time.sleep(60)
             if SCENARIO == "poll-500":
                 return self.reply(500, {"message": "boom"})
             if SCENARIO == "poll-garbage":
@@ -61,6 +66,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/v1/deploy"):
             if SCENARIO in DEPLOY_ERRORS:
                 return self.reply(DEPLOY_ERRORS[SCENARIO], {"message": SCENARIO})
+            if SCENARIO == "already-queued":
+                return self.reply(200, {"deployments": [{
+                    "message": "Deployment already queued for this commit.",
+                    "resource_uuid": "app-uuid",
+                    "deployment_uuid": "orphan-456",
+                }]})
             if SCENARIO == "no-uuid":
                 return self.reply(200, {"deployments": []})
             return self.reply(200, {"deployments": [{
@@ -71,4 +82,8 @@ class Handler(BaseHTTPRequestHandler):
         self.reply(404, {"message": "unknown path"})
 
 
-HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+class Server(HTTPServer):
+    allow_reuse_address = True
+
+
+Server(("127.0.0.1", PORT), Handler).serve_forever()

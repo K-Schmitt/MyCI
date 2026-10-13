@@ -45,6 +45,7 @@ jobs:
           interval="${POLL_INTERVAL:-20}"
           timeout="${POLL_TIMEOUT:-900}"
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          curl_opts=(--connect-timeout 10 --max-time "${CURL_MAX_TIME:-30}")
 
           fail() {
             echo "::error::$*"
@@ -53,7 +54,7 @@ jobs:
           }
 
           # 1. Freshness: skip if the branch moved past the tested commit.
-          head=$(curl -sS --fail \
+          head=$(curl -sS --fail "${curl_opts[@]}" \
               -H "Authorization: Bearer ${GITHUB_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
               "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/ref/heads/${GITHUB_REF_NAME}" \
@@ -66,7 +67,7 @@ jobs:
           fi
 
           # 2. Trigger.
-          resp=$(curl -sS -X POST -w '\n%{http_code}' \
+          resp=$(curl -sS "${curl_opts[@]}" -X POST -w '\n%{http_code}' \
               -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
               "${api}/deploy?uuid=${APP_UUID}&force=false") \
             || fail "Coolify unreachable at ${COOLIFY_URL}"
@@ -77,12 +78,21 @@ jobs:
             401) fail "Coolify rejected the token (401): invalid token or API access disabled" ;;
             403) fail "The Coolify token lacks the deploy permission (403)" ;;
             404) fail "Coolify application ${APP_UUID} not found (404)" ;;
+            429) fail "The Coolify deployment queue is full (429); retry once queued deployments finish" ;;
             *) fail "Coolify deploy request failed (HTTP ${code}): ${body:0:200}" ;;
           esac
           uuid=$(printf '%s' "$body" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["deployments"][0]["deployment_uuid"])' 2>/dev/null) \
             || uuid=""
           [ -n "$uuid" ] || fail "No deployment_uuid in Coolify response: ${body:0:200}"
+          message=$(printf '%s' "$body" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["deployments"][0].get("message", ""))' 2>/dev/null) \
+            || message=""
+          # Coolify answers 200 with a fresh, untracked uuid when the app already has a
+          # deployment of commit HEAD queued or running (manual Redeploy, earlier run).
+          if [[ "$message" == *"already queued"* ]]; then
+            fail "Coolify already has a deployment queued or in progress for ${APP_UUID}; it was not re-triggered and cannot be verified from here. Check it in Coolify, then re-run this job."
+          fi
           echo "Deployment ${uuid} queued for ${GITHUB_SHA:0:7}"
           echo "🚀 Deployment \`${uuid}\` queued for \`${GITHUB_SHA:0:7}\`" >> "$summary"
           if [ "$WAIT" != "true" ]; then
@@ -96,12 +106,15 @@ jobs:
           commit=""
           while :; do
             if (( SECONDS - start > timeout )); then
-              fail "Timed out after ${timeout}s waiting for deployment ${uuid} (last status: ${status:-none})"
+              fail "Timed out after ${timeout}s waiting for deployment ${uuid} (last status: ${status:-none}); it may still complete in Coolify"
             fi
-            r=$(curl -sS -w '\n%{http_code}' \
+            if ! r=$(curl -sS "${curl_opts[@]}" -w '\n%{http_code}' \
                 -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
-                "${api}/deployments/${uuid}") \
-              || fail "Coolify unreachable while following deployment ${uuid}"
+                "${api}/deployments/${uuid}"); then
+              echo "::warning::Coolify did not answer while following ${uuid}; retrying"
+              sleep "$interval"
+              continue
+            fi
             c=${r##*$'\n'}
             b=${r%$'\n'*}
             [ "$c" = 200 ] || fail "Following deployment ${uuid} failed (HTTP ${c})"

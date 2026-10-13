@@ -31,6 +31,9 @@ cases=(
   "poll-500|true|1|failed (HTTP 500)|GET /api/v1/deployments/dep-123"
   "poll-garbage|true|1|Unreadable deployment status|GET /api/v1/deployments/dep-123"
   "timeout|true|1|Timed out after 2s|GET /api/v1/deployments/dep-123"
+  "already-queued|true|1|already has a deployment queued or in progress|!GET /api/v1/deployments/orphan-456"
+  "queue-full|true|1|deployment queue is full (429)|POST /api/v1/deploy"
+  "poll-hang|true|1|Timed out after 2s|GET /api/v1/deployments/dep-123"
 )
 
 for row in "${cases[@]}"; do
@@ -45,8 +48,8 @@ for row in "${cases[@]}"; do
     COOLIFY_TOKEN=test-token GITHUB_TOKEN=gh-token \
     GITHUB_API_URL="http://127.0.0.1:$port" GITHUB_REPOSITORY=owner/repo \
     GITHUB_REF_NAME=main GITHUB_SHA="$sha" GITHUB_STEP_SUMMARY="$work/summary.md" \
-    POLL_INTERVAL=0.2 POLL_TIMEOUT=2 \
-    bash "$work/deploy.sh" 2>&1)
+    POLL_INTERVAL=0.2 POLL_TIMEOUT=2 CURL_MAX_TIME=1 \
+    timeout 15 bash "$work/deploy.sh" 2>&1)
   got_exit=$?
   kill "$mock_pid" 2>/dev/null; wait "$mock_pid" 2>/dev/null
 
