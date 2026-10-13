@@ -1,0 +1,94 @@
+# MyCI
+
+[![self-test](https://github.com/K-Schmitt/MyCI/actions/workflows/self-test.yml/badge.svg)](https://github.com/K-Schmitt/MyCI/actions/workflows/self-test.yml)
+
+Reusable GitHub Actions workflows that gate production deployments behind CI.
+Written once here, called from every project with a ~25-line file.
+
+**The problem it solves:** Coolify redeployed every push, including broken ones.
+With MyCI, a deployment only happens after lint, typecheck, tests, build and a Docker build pass,
+and the job turns red if Coolify deploys anything other than the commit that was tested.
+
+```
+push to main ──► node-ci ──┐
+                           ├──► deploy-coolify ──► Coolify builds ──► verify deployed commit == tested commit
+             docker-build ─┘          │
+                                      └─ skipped if main moved on (the newer run deploys)
+```
+
+## Workflows
+
+| Workflow | What it guarantees |
+|---|---|
+| `node-ci.yml` | Lockfile-strict install (npm or pnpm, auto-detected), then `lint`, `typecheck`, `test`, `build` when present. Scripts listed in `require` (default `lint,build`) must exist. A job summary lists what ran, failed or was absent. |
+| `docker-build.yml` | The project's Dockerfile builds (no push). It does not reproduce Coolify's build args. |
+| `deploy-coolify.yml` | Triggers a Coolify deployment, follows it to the end, and fails unless Coolify reports `finished` **and** the deployed commit equals the tested commit. |
+
+### node-ci inputs
+
+| Input | Default | Notes |
+|---|---|---|
+| `node-version` | `24` | Ignored when `.nvmrc` exists |
+| `require` | `lint,build` | Comma-separated; empty string disables the check |
+| `pnpm-version` | `""` | Only for pnpm projects without a `packageManager` field |
+| `working-directory` | `.` | Folder holding `package.json` |
+
+### docker-build inputs
+
+| Input | Default |
+|---|---|
+| `context` | `.` |
+| `dockerfile` | `Dockerfile` (relative to `context`) |
+
+### deploy-coolify inputs and secrets
+
+| Name | Kind | Default |
+|---|---|---|
+| `coolify-url` | input | required |
+| `app-uuid` | input | required |
+| `wait` | input | `true` |
+| `coolify-token` | secret | required |
+
+## Use it in a project
+
+1. Copy [`examples/caller-node-coolify.yml`](examples/caller-node-coolify.yml) to `.github/workflows/ci.yml`.
+   If the production branch is not `main`, change the `branches:` line only.
+2. In Coolify: **Keys & Tokens → API tokens**, create a token with **read** and **deploy** only
+   (never `root` or `write`). Make sure API access is enabled (Settings → Advanced).
+3. In the GitHub repository:
+   ```bash
+   gh variable set COOLIFY_URL --body https://coolify.example.com
+   gh variable set COOLIFY_APP_UUID --body <application uuid>
+   gh secret set COOLIFY_TOKEN        # paste the token when prompted
+   ```
+4. Push once with Coolify auto-deploy still on and check the `deploy` job is green.
+5. Turn off **Auto Deploy** for the application in Coolify. From now on, only green CI deploys.
+
+## Versioning
+
+Pin `@v1`. Each release gets an immutable `vX.Y.Z` tag; `v1` moves to the latest compatible release
+once that release has run on a real project pinned to its exact version. Breaking changes ship as `v2`.
+Third-party actions are pinned by commit SHA.
+
+## Known limits
+
+- **Manual redeploys bypass CI.** Coolify's *Redeploy* button deploys whatever is on the branch. It is
+  also the break-glass path when GitHub Actions or MyCI is down.
+- **Race window.** A push landing between the freshness check and Coolify's clone can be deployed;
+  the commit verification then turns the job red instead of letting it pass silently.
+- **Rollback is manual:** redeploy a previous deployment from the Coolify UI.
+- **Tokens are team-wide in Coolify.** A leaked token can deploy (not reconfigure) any application of
+  the team. Rotate it repository by repository (`gh secret set COOLIFY_TOKEN`).
+- **Private repositories on GitHub Free** do not enforce branch protection: red code can be merged,
+  it just never gets deployed.
+
+## Development
+
+```bash
+bash tests/run.sh   # script tests: deploy-coolify vs a fake Coolify, node-ci and docker-build steps on fixtures
+docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -no-color .github/workflows/*.yml examples/*.yml
+```
+
+Tests execute the exact `run:` scripts extracted from the workflow files. `self-test.yml` also runs
+the templates on fixtures and dispatches `negative-fixture.yml`, asserting that each broken fixture
+fails at the expected step.
