@@ -1,0 +1,122 @@
+name: deploy-coolify
+
+on:
+  workflow_call:
+    inputs:
+      coolify-url:
+        description: Base URL of the Coolify instance (e.g. https://coolify.example.com)
+        type: string
+        required: true
+      app-uuid:
+        description: UUID of the Coolify application to deploy
+        type: string
+        required: true
+      wait:
+        description: Follow the deployment until it ends and verify the deployed commit
+        type: boolean
+        default: true
+    secrets:
+      coolify-token:
+        description: Coolify API token with read + deploy permissions only
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: deploy-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Deploy to Coolify
+        id: deploy
+        env:
+          COOLIFY_URL: ${{ inputs.coolify-url }}
+          APP_UUID: ${{ inputs.app-uuid }}
+          WAIT: ${{ inputs.wait }}
+          COOLIFY_TOKEN: ${{ secrets.coolify-token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="${COOLIFY_URL%/}/api/v1"
+          interval="${POLL_INTERVAL:-20}"
+          timeout="${POLL_TIMEOUT:-900}"
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+          fail() {
+            echo "::error::$*"
+            echo "❌ $*" >> "$summary"
+            exit 1
+          }
+
+          # 1. Freshness: skip if the branch moved past the tested commit.
+          head=$(curl -sS --fail \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/ref/heads/${GITHUB_REF_NAME}" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["object"]["sha"])') \
+            || fail "Could not read the current head of ${GITHUB_REF_NAME}"
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::notice::${GITHUB_REF_NAME} moved to ${head:0:7} after the tested commit ${GITHUB_SHA:0:7}; skipping, the newer run deploys."
+            echo "⏭️ Skipped: ${GITHUB_REF_NAME} moved to \`${head:0:7}\`, its own run deploys it." >> "$summary"
+            exit 0
+          fi
+
+          # 2. Trigger.
+          resp=$(curl -sS -X POST -w '\n%{http_code}' \
+              -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
+              "${api}/deploy?uuid=${APP_UUID}&force=false") \
+            || fail "Coolify unreachable at ${COOLIFY_URL}"
+          code=${resp##*$'\n'}
+          body=${resp%$'\n'*}
+          case "$code" in
+            200) ;;
+            401) fail "Coolify rejected the token (401): invalid token or API access disabled" ;;
+            403) fail "The Coolify token lacks the deploy permission (403)" ;;
+            404) fail "Coolify application ${APP_UUID} not found (404)" ;;
+            *) fail "Coolify deploy request failed (HTTP ${code}): ${body:0:200}" ;;
+          esac
+          uuid=$(printf '%s' "$body" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["deployments"][0]["deployment_uuid"])' 2>/dev/null) \
+            || uuid=""
+          [ -n "$uuid" ] || fail "No deployment_uuid in Coolify response: ${body:0:200}"
+          echo "Deployment ${uuid} queued for ${GITHUB_SHA:0:7}"
+          echo "🚀 Deployment \`${uuid}\` queued for \`${GITHUB_SHA:0:7}\`" >> "$summary"
+          if [ "$WAIT" != "true" ]; then
+            echo "wait=false: not following the deployment"
+            exit 0
+          fi
+
+          # 3. Follow until a terminal status. `commit` reads "HEAD" until then.
+          start=$SECONDS
+          status=""
+          commit=""
+          while :; do
+            if (( SECONDS - start > timeout )); then
+              fail "Timed out after ${timeout}s waiting for deployment ${uuid} (last status: ${status:-none})"
+            fi
+            r=$(curl -sS -w '\n%{http_code}' \
+                -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
+                "${api}/deployments/${uuid}") \
+              || fail "Coolify unreachable while following deployment ${uuid}"
+            c=${r##*$'\n'}
+            b=${r%$'\n'*}
+            [ "$c" = 200 ] || fail "Following deployment ${uuid} failed (HTTP ${c})"
+            read -r status commit < <(printf '%s' "$b" \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d.get("commit") or "-")' 2>/dev/null) \
+              || fail "Unreadable deployment status: ${b:0:200}"
+            echo "$(( SECONDS - start ))s: ${status}"
+            case "$status" in
+              finished | failed | cancelled-by-user) break ;;
+            esac
+            sleep "$interval"
+          done
+
+          # 4. Verify outcome and commit.
+          [ "$status" = finished ] || fail "Coolify deployment ${uuid} ended with status '${status}'"
+          [ "$commit" = "$GITHUB_SHA" ] || fail "Coolify deployed ${commit} instead of the tested commit ${GITHUB_SHA}"
+          echo "Deployed ${GITHUB_SHA:0:7} in $(( SECONDS - start ))s"
+          echo "✅ Deployed \`${GITHUB_SHA:0:7}\` (deployment \`${uuid}\`, $(( SECONDS - start ))s)" >> "$summary"
