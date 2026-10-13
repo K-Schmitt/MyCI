@@ -79,6 +79,12 @@ Third-party actions are pinned by commit SHA.
 - **Rollback is manual:** redeploy a previous deployment from the Coolify UI.
 - **Tokens are team-wide in Coolify.** A leaked token can deploy (not reconfigure) any application of
   the team. Rotate it repository by repository (`gh secret set COOLIFY_TOKEN`).
+- **Build args.** `docker-build` does not receive the build args or variables Coolify injects. If the
+  Dockerfile needs them, drop the `docker` job from the caller (and from `deploy.needs`): Coolify's own
+  build is still checked by the deployment status.
+- **Already-queued deployments.** If Coolify already has a deployment of the app queued or running
+  (for example a manual *Redeploy*), it does not start a new one; the job fails with a message saying
+  so, since it cannot verify a deployment it did not start.
 - **Private repositories on GitHub Free** do not enforce branch protection: red code can be merged,
   it just never gets deployed.
 
