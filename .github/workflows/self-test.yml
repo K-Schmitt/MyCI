@@ -1,0 +1,90 @@
+name: self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: actionlint (with shellcheck)
+        run: >-
+          docker run --rm -v "$PWD:/repo" -w /repo
+          rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+          -no-color -oneline .github/workflows/*.yml examples/*.yml
+      - name: Script tests
+        run: bash tests/run.sh
+
+  npm:
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-npm
+      require: lint,typecheck,test,build
+
+  pnpm:
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-pnpm
+      require: lint,test,build
+
+  docker:
+    uses: ./.github/workflows/docker-build.yml
+    with:
+      context: fixtures/node-npm
+
+  negative:
+    # A fork's GITHUB_TOKEN cannot dispatch workflows.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch negative-fixture and assert each job failed for its reason
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ github.head_ref || github.ref_name }}
+          NONCE: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          gh workflow run negative-fixture.yml --ref "$REF" -f nonce="$NONCE"
+
+          id=""
+          for _ in $(seq 30); do
+            id=$(gh run list --workflow negative-fixture.yml --event workflow_dispatch --limit 20 \
+              --json databaseId,displayTitle \
+              -q ".[] | select(.displayTitle == \"negative ${NONCE}\") | .databaseId")
+            [ -n "$id" ] && break
+            sleep 5
+          done
+          [ -n "$id" ] || { echo "::error::negative-fixture run 'negative ${NONCE}' not found"; exit 1; }
+          echo "negative-fixture run: $id"
+
+          gh run watch "$id" --interval 10 > /dev/null || true
+          gh run view "$id" --json jobs > jobs.json
+
+          status=0
+          # job prefix | step that must be the failing one
+          for pair in "broken|Test" "missing-script|Check required scripts" "nolock|Detect package manager"; do
+            job=${pair%%|*}
+            want=${pair#*|}
+            got=$(jq -r --arg p "${job} /" \
+              '[.jobs[] | select(.name | startswith($p))][0] | "\(.conclusion)|\([.steps[] | select(.conclusion == "failure") | .name][0])"' \
+              jobs.json)
+            if [ "$got" = "failure|${want}" ]; then
+              echo "OK   ${job}: failed at '${want}'"
+            else
+              echo "::error::${job}: expected failure at '${want}', got '${got}'"
+              status=1
+            fi
+          done
+          exit "$status"

@@ -1,0 +1,26 @@
+# Copy to <your-project>/.github/workflows/ci.yml
+# Needs: repository variables COOLIFY_URL and COOLIFY_APP_UUID, secret COOLIFY_TOKEN (read + deploy).
+name: CI
+
+on:
+  push:
+    branches: [main] # your production branch
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: K-Schmitt/MyCI/.github/workflows/node-ci.yml@v1
+  docker:
+    uses: K-Schmitt/MyCI/.github/workflows/docker-build.yml@v1
+  deploy:
+    needs: [ci, docker]
+    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+    uses: K-Schmitt/MyCI/.github/workflows/deploy-coolify.yml@v1
+    with:
+      coolify-url: ${{ vars.COOLIFY_URL }}
+      app-uuid: ${{ vars.COOLIFY_APP_UUID }}
+    secrets:
+      coolify-token: ${{ secrets.COOLIFY_TOKEN }}

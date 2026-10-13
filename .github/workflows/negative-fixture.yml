@@ -1,0 +1,28 @@
+name: negative-fixture
+run-name: negative ${{ inputs.nonce }}
+
+# Dispatched by self-test.yml. Every job here MUST fail; self-test asserts it.
+on:
+  workflow_dispatch:
+    inputs:
+      nonce:
+        description: Identifier used by self-test to find this run
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  broken:
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-broken
+  missing-script:
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-missing-script
+  nolock:
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-nolock
