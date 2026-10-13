@@ -1,0 +1,170 @@
+name: node-ci
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version, ignored when .nvmrc exists
+        type: string
+        default: "24"
+      require:
+        description: Comma-separated package.json scripts that must exist
+        type: string
+        default: lint,build
+      pnpm-version:
+        description: pnpm version, used only when package.json has no packageManager field
+        type: string
+        default: ""
+      working-directory:
+        description: Directory containing package.json, relative to the repository root
+        type: string
+        default: .
+
+permissions:
+  contents: read
+
+jobs:
+  node-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: node-ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Detect package manager
+        id: detect
+        env:
+          PNPM_VERSION: ${{ inputs.pnpm-version }}
+          WORKDIR: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          if [ -f pnpm-lock.yaml ]; then
+            pm=pnpm
+            lockfile=pnpm-lock.yaml
+          elif [ -f package-lock.json ]; then
+            pm=npm
+            lockfile=package-lock.json
+          else
+            echo "::error::No lockfile in '${WORKDIR}': commit package-lock.json or pnpm-lock.yaml"
+            exit 1
+          fi
+          pnpm_version=""
+          if [ "$pm" = pnpm ]; then
+            if ! node -e 'process.exit(String(require("./package.json").packageManager || "").startsWith("pnpm@") ? 0 : 1)'; then
+              if [ -z "$PNPM_VERSION" ]; then
+                echo "::error::pnpm detected but package.json has no \"packageManager\": \"pnpm@x.y.z\" field and no pnpm-version input was given"
+                exit 1
+              fi
+              pnpm_version="$PNPM_VERSION"
+            fi
+          fi
+          nvmrc=""
+          if [ -f .nvmrc ]; then nvmrc="${WORKDIR}/.nvmrc"; fi
+          {
+            echo "pm=$pm"
+            echo "lockfile=${WORKDIR}/${lockfile}"
+            echo "pnpm-version=$pnpm_version"
+            echo "nvmrc=$nvmrc"
+          } >> "$GITHUB_OUTPUT"
+          echo "Detected $pm (lockfile ${lockfile})"
+
+      - name: Set up pnpm
+        if: steps.detect.outputs.pm == 'pnpm'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ steps.detect.outputs.pnpm-version }}
+          package_json_file: ${{ inputs.working-directory }}/package.json
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.detect.outputs.nvmrc == '' && inputs.node-version || '' }}
+          node-version-file: ${{ steps.detect.outputs.nvmrc }}
+          cache: ${{ steps.detect.outputs.pm }}
+          cache-dependency-path: ${{ steps.detect.outputs.lockfile }}
+
+      - name: Install dependencies
+        env:
+          PM: ${{ steps.detect.outputs.pm }}
+        run: |
+          if [ "$PM" = pnpm ]; then pnpm install --frozen-lockfile; else npm ci; fi
+
+      - name: Check required scripts
+        id: require
+        env:
+          REQUIRE: ${{ inputs.require }}
+        run: |
+          set -euo pipefail
+          missing=()
+          IFS=',' read -ra wanted <<< "$REQUIRE"
+          for script in "${wanted[@]}"; do
+            script="${script// /}"
+            [ -n "$script" ] || continue
+            node -e 'process.exit((require("./package.json").scripts || {})[process.argv[1]] ? 0 : 1)' "$script" \
+              || missing+=("$script")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Required package.json scripts missing: ${missing[*]} (require: '${REQUIRE}')"
+            exit 1
+          fi
+
+      - name: Lint
+        id: lint
+        env:
+          PM: ${{ steps.detect.outputs.pm }}
+        run: '"$PM" run --if-present lint'
+      - name: Typecheck
+        id: typecheck
+        env:
+          PM: ${{ steps.detect.outputs.pm }}
+        run: '"$PM" run --if-present typecheck'
+      - name: Test
+        id: test
+        env:
+          PM: ${{ steps.detect.outputs.pm }}
+        run: '"$PM" run --if-present test'
+      - name: Build
+        id: build
+        env:
+          PM: ${{ steps.detect.outputs.pm }}
+        run: '"$PM" run --if-present build'
+
+      - name: Summary
+        id: summary
+        if: always()
+        env:
+          PM: ${{ steps.detect.outputs.pm }}
+          OUTCOMES: >-
+            lint=${{ steps.lint.outcome }}
+            typecheck=${{ steps.typecheck.outcome }}
+            test=${{ steps.test.outcome }}
+            build=${{ steps.build.outcome }}
+        run: |
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          {
+            echo "### node-ci"
+            echo "Package manager: \`${PM:-not detected}\` · Node: \`$(node --version 2>/dev/null || echo none)\`"
+            echo
+            echo "| Script | Result |"
+            echo "|---|---|"
+          } >> "$summary"
+          for pair in $OUTCOMES; do
+            name=${pair%%=*}
+            outcome=${pair#*=}
+            if [ -f package.json ] && ! node -e 'process.exit((require("./package.json").scripts || {})[process.argv[1]] ? 0 : 1)' "$name" 2>/dev/null; then
+              result="⚠️ absent"
+            else
+              case "$outcome" in
+                success) result="✅ passed" ;;
+                failure) result="❌ failed" ;;
+                *) result="⏭️ not run" ;;
+              esac
+            fi
+            echo "| ${name} | ${result} |" >> "$summary"
+            echo "${name}: ${result}"
+          done

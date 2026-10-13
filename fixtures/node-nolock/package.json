@@ -1,0 +1,11 @@
+{
+  "name": "fixture-node-nolock",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "lint": "node --check src/index.js",
+    "typecheck": "node --check src/index.js",
+    "test": "node --test",
+    "build": "node scripts/build.mjs"
+  }
+}
