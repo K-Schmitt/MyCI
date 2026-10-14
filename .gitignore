@@ -2,3 +2,5 @@ node_modules/
 dist/
 .draft/
 .superpowers/
+docs/superpowers/
+TASKS.md
