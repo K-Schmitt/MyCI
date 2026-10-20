@@ -47,6 +47,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(404, {"message": "Deployment not found."})
             if SCENARIO == "poll-hang":
                 time.sleep(60)
+            if SCENARIO == "poll-403":
+                return self.reply(403, {"message": "Missing required permissions: read"})
             if SCENARIO == "poll-500":
                 return self.reply(500, {"message": "boom"})
             if SCENARIO == "poll-garbage":

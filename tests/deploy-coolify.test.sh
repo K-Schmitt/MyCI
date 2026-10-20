@@ -28,6 +28,7 @@ cases=(
   "failed|true|1|ended with status 'failed'|GET /api/v1/deployments/dep-123"
   "cancelled|true|1|ended with status 'cancelled-by-user'|GET /api/v1/deployments/dep-123"
   "commit-mismatch|true|1|instead of the tested commit|GET /api/v1/deployments/dep-123"
+  "poll-403|true|1|lacks the read permission (403): Missing required permissions: read|GET /api/v1/deployments/dep-123"
   "poll-500|true|1|failed (HTTP 500)|GET /api/v1/deployments/dep-123"
   "poll-garbage|true|1|Unreadable deployment status|GET /api/v1/deployments/dep-123"
   "timeout|true|1|Timed out after 2s|GET /api/v1/deployments/dep-123"

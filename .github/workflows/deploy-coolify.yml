@@ -117,7 +117,13 @@ jobs:
             fi
             c=${r##*$'\n'}
             b=${r%$'\n'*}
-            [ "$c" = 200 ] || fail "Following deployment ${uuid} failed (HTTP ${c})"
+            if [ "$c" != 200 ]; then
+              detail=$(printf '%s' "$b" \
+                | python3 -c 'import json,sys; print(json.load(sys.stdin).get("message", ""))' 2>/dev/null) \
+                || detail=""
+              [ "$c" = 403 ] && fail "The Coolify token lacks the read permission (403): ${detail:-no detail}"
+              fail "Following deployment ${uuid} failed (HTTP ${c})${detail:+: ${detail}}"
+            fi
             read -r status commit < <(printf '%s' "$b" \
               | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d.get("commit") or "-")' 2>/dev/null) \
               || fail "Unreadable deployment status: ${b:0:200}"
