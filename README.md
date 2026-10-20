@@ -54,7 +54,9 @@ push to main ──► node-ci ──┐
 1. Copy [`examples/caller-node-coolify.yml`](examples/caller-node-coolify.yml) to `.github/workflows/ci.yml`.
    If the production branch is not `main`, change the `branches:` line only.
 2. In Coolify: **Keys & Tokens → API tokens**, create a token with **read** and **deploy** only
-   (never `root` or `write`). Make sure API access is enabled (Settings → Advanced).
+   (never `root` or `write`): `deploy` triggers the deployment, `read` follows it. Coolify tokens are
+   team-wide, so one token can serve every project. Make sure API access is enabled
+   (Settings → Advanced).
 3. In the GitHub repository:
    ```bash
    gh variable set COOLIFY_URL --body https://coolify.example.com
