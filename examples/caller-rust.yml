@@ -1,0 +1,17 @@
+# Copy to <your-project>/.github/workflows/ci.yml
+# The project must commit rust-toolchain.toml and Cargo.lock. cargo-deny runs when deny.toml exists.
+name: CI
+
+on:
+  push:
+    branches: [main] # your production branch
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: K-Schmitt/MyCI/.github/workflows/rust-ci.yml@v1
+    # with:
+    #   gate: cargo xtask check # default; any command that exits non-zero on failure

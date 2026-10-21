@@ -21,6 +21,7 @@ push to main ──► node-ci ──┐
 | Workflow | What it guarantees |
 |---|---|
 | `node-ci.yml` | Lockfile-strict install (npm or pnpm, auto-detected), then `lint`, `typecheck`, `test`, `build` when present. Scripts listed in `require` (default `lint,build`) must exist. A job summary lists what ran, failed or was absent. |
+| `rust-ci.yml` | The pinned toolchain (`rust-toolchain.toml`) and `Cargo.lock` are present, then the project's own quality gate runs (default `cargo xtask check`) with a Cargo cache and `cargo-deny` installed when a `deny.toml` exists. |
 | `docker-build.yml` | The project's Dockerfile builds (no push). It does not reproduce Coolify's build args. |
 | `deploy-coolify.yml` | Triggers a Coolify deployment, follows it to the end, and fails unless Coolify reports `finished` **and** the deployed commit equals the tested commit. |
 
@@ -32,6 +33,17 @@ push to main ──► node-ci ──┐
 | `require` | `lint,build` | Comma-separated; empty string disables the check |
 | `pnpm-version` | `""` | Only for pnpm projects without a `packageManager` field |
 | `working-directory` | `.` | Folder holding `package.json` |
+
+### rust-ci inputs
+
+| Input | Default | Notes |
+|---|---|---|
+| `gate` | `cargo xtask check` | The project's quality gate; any command that exits non-zero on failure. Projects without an `xtask` pass their own, e.g. `cargo clippy --locked -- -D warnings && cargo test --locked` |
+| `working-directory` | `.` | Folder holding `Cargo.lock` and `rust-toolchain.toml` |
+| `deny-version` | `0.20.2` | Only used when a `deny.toml` exists |
+
+The gate is the project's, not MyCI's: when it changes, CI follows without touching MyCI. Linux only for
+now; system libraries and other operating systems are added when a project needs them.
 
 ### docker-build inputs
 
@@ -51,7 +63,8 @@ push to main ──► node-ci ──┐
 
 ## Use it in a project
 
-1. Copy [`examples/caller-node-coolify.yml`](examples/caller-node-coolify.yml) to `.github/workflows/ci.yml`.
+1. Copy [`examples/caller-node-coolify.yml`](examples/caller-node-coolify.yml) (Node + Coolify) or
+   [`examples/caller-rust.yml`](examples/caller-rust.yml) (Rust, CI only) to `.github/workflows/ci.yml`.
    If the production branch is not `main`, change the `branches:` line only.
 2. In Coolify: **Keys & Tokens → API tokens**, create a token with **read** and **deploy** only
    (never `root` or `write`): `deploy` triggers the deployment, `read` follows it. Coolify tokens are

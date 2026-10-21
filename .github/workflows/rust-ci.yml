@@ -1,0 +1,97 @@
+name: rust-ci
+
+on:
+  workflow_call:
+    inputs:
+      gate:
+        description: Command that is the project's quality gate; it must exit non-zero on failure
+        type: string
+        default: cargo xtask check
+      working-directory:
+        description: Directory containing Cargo.lock and rust-toolchain.toml, relative to the repository root
+        type: string
+        default: .
+      deny-version:
+        description: cargo-deny version installed when the project has a deny.toml
+        type: string
+        default: 0.20.2
+
+permissions:
+  contents: read
+
+jobs:
+  rust-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: rust-ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Detect Rust project
+        id: detect
+        env:
+          WORKDIR: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          if [ ! -f rust-toolchain.toml ]; then
+            echo "::error::No rust-toolchain.toml in '${WORKDIR}': pin the toolchain so CI builds what you build"
+            exit 1
+          fi
+          if [ ! -f Cargo.lock ]; then
+            echo "::error::No Cargo.lock in '${WORKDIR}': commit it so CI resolves the same dependencies"
+            exit 1
+          fi
+          has_deny=false
+          if [ -f deny.toml ]; then has_deny=true; fi
+          echo "has-deny=$has_deny" >> "$GITHUB_OUTPUT"
+          echo "Detected a pinned Rust project (cargo-deny: $has_deny)"
+
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ${{ inputs.working-directory }}
+
+      - name: Install cargo-deny
+        if: steps.detect.outputs.has-deny == 'true'
+        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+        with:
+          tool: cargo-deny@${{ inputs.deny-version }}
+
+      - name: Run gate
+        id: gate
+        env:
+          GATE: ${{ inputs.gate }}
+        run: bash -euo pipefail -c "$GATE"
+
+      - name: Summary
+        id: summary
+        if: always()
+        env:
+          GATE: ${{ inputs.gate }}
+          GATE_OUTCOME: ${{ steps.gate.outcome }}
+          HAS_DENY: ${{ steps.detect.outputs.has-deny }}
+        run: |
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          case "$GATE_OUTCOME" in
+            success) result="✅ passed" ;;
+            failure) result="❌ failed" ;;
+            *) result="⏭️ not run" ;;
+          esac
+          deny=no
+          if [ "$HAS_DENY" = true ]; then deny=yes; fi
+          {
+            echo "### rust-ci"
+            echo "Toolchain: \`$(rustc --version 2>/dev/null || echo none)\` · cargo-deny: ${deny}"
+            echo
+            echo "| Gate | Result |"
+            echo "|---|---|"
+            echo "| \`${GATE}\` | ${result} |"
+          } >> "$summary"
+          echo "gate: ${result}"
