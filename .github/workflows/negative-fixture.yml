@@ -26,3 +26,18 @@ jobs:
     uses: ./.github/workflows/node-ci.yml
     with:
       working-directory: fixtures/node-nolock
+  rust-broken:
+    uses: ./.github/workflows/rust-ci.yml
+    with:
+      working-directory: fixtures/rust-broken
+      gate: cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && cargo deny check
+  rust-no-toolchain:
+    uses: ./.github/workflows/rust-ci.yml
+    with:
+      working-directory: fixtures/rust-no-toolchain
+      gate: cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && cargo deny check
+  rust-no-lock:
+    uses: ./.github/workflows/rust-ci.yml
+    with:
+      working-directory: fixtures/rust-no-lock
+      gate: cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && cargo deny check
