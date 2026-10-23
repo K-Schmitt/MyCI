@@ -1,0 +1,111 @@
+name: python-ci
+
+on:
+  workflow_call:
+    inputs:
+      gate:
+        description: Command that is the project's quality gate; it must exit non-zero on failure
+        type: string
+        default: python -m pytest -q
+      python-version:
+        description: Python version, ignored when .python-version exists
+        type: string
+        default: "3.12"
+      requirements:
+        description: Comma-separated requirements files to install, relative to working-directory; empty installs nothing
+        type: string
+        default: requirements.txt,requirements-dev.txt
+      working-directory:
+        description: Directory holding the requirements files and the tests, relative to the repository root
+        type: string
+        default: .
+
+permissions:
+  contents: read
+
+jobs:
+  python-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: python-ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Detect Python project
+        id: detect
+        env:
+          WORKDIR: ${{ inputs.working-directory }}
+          REQUIREMENTS: ${{ inputs.requirements }}
+          PYTHON_VERSION: ${{ inputs.python-version }}
+        run: |
+          set -euo pipefail
+          args=""
+          IFS=',' read -ra files <<< "$REQUIREMENTS"
+          for f in "${files[@]}"; do
+            f=$(echo "$f" | xargs)
+            [ -n "$f" ] || continue
+            if [ ! -f "$f" ]; then
+              echo "::error::Requirements file '${f}' not found in '${WORKDIR}': fix the requirements input or commit the file"
+              exit 1
+            fi
+            args="${args:+$args }-r $f"
+            if grep -Ev '^[[:space:]]*(#|-|$)' "$f" | grep -qv '=='; then
+              echo "::warning::${f} has requirements that are not pinned with ==: CI may resolve different versions than you do"
+            fi
+          done
+          version="$PYTHON_VERSION"
+          if [ -f .python-version ]; then
+            version=$(tr -d '[:space:]' < .python-version)
+          fi
+          echo "install-args=$args" >> "$GITHUB_OUTPUT"
+          echo "python-version=$version" >> "$GITHUB_OUTPUT"
+          echo "Python ${version}, install: ${args:-nothing}"
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ steps.detect.outputs.python-version }}
+          cache: ${{ steps.detect.outputs.install-args != '' && 'pip' || '' }}
+          cache-dependency-path: ${{ inputs.working-directory }}/requirements*.txt
+
+      - name: Install dependencies
+        if: steps.detect.outputs.install-args != ''
+        env:
+          INSTALL_ARGS: ${{ steps.detect.outputs.install-args }}
+        run: |
+          set -euo pipefail
+          read -ra args <<< "$INSTALL_ARGS"
+          python -m pip install "${args[@]}"
+
+      - name: Run gate
+        id: gate
+        env:
+          GATE: ${{ inputs.gate }}
+        run: bash -euo pipefail -c "$GATE"
+
+      - name: Summary
+        id: summary
+        if: always()
+        env:
+          GATE: ${{ inputs.gate }}
+          GATE_OUTCOME: ${{ steps.gate.outcome }}
+        run: |
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          case "$GATE_OUTCOME" in
+            success) result="✅ passed" ;;
+            failure) result="❌ failed" ;;
+            *) result="⏭️ not run" ;;
+          esac
+          {
+            echo "### python-ci"
+            echo "Python: \`$(python --version 2>/dev/null || echo none)\`"
+            echo
+            echo "| Gate | Result |"
+            echo "|---|---|"
+            echo "| \`${GATE}\` | ${result} |"
+          } >> "$summary"
+          echo "gate: ${result}"
