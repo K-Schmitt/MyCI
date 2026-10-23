@@ -22,6 +22,7 @@ push to main ──► node-ci ──┐
 |---|---|
 | `node-ci.yml` | Lockfile-strict install (npm or pnpm, auto-detected), then `lint`, `typecheck`, `test`, `build` when present. Scripts listed in `require` (default `lint,build`) must exist. A job summary lists what ran, failed or was absent. |
 | `rust-ci.yml` | The pinned toolchain (`rust-toolchain.toml`) and `Cargo.lock` are present, then the project's own quality gate runs (default `cargo xtask check`) with a Cargo cache and `cargo-deny` installed when a `deny.toml` exists. |
+| `python-ci.yml` | Installs the requirements files on the requested Python and runs the project's own gate (pytest by default). |
 | `docker-build.yml` | The project's Dockerfile builds (no push). It does not reproduce Coolify's build args. |
 | `deploy-coolify.yml` | Triggers a Coolify deployment, follows it to the end, and fails unless Coolify reports `finished` **and** the deployed commit equals the tested commit. |
 
@@ -44,6 +45,17 @@ push to main ──► node-ci ──┐
 
 The gate is the project's, not MyCI's: when it changes, CI follows without touching MyCI. Linux only for
 now; system libraries and other operating systems are added when a project needs them.
+
+### python-ci inputs
+
+| Input | Default | Notes |
+|---|---|---|
+| `gate` | `python -m pytest -q` | The project's quality gate; any command that exits non-zero on failure (add `ruff check && mypy .` here if you use them) |
+| `python-version` | `3.12` | Ignored when `.python-version` exists |
+| `requirements` | `requirements.txt,requirements-dev.txt` | Comma-separated, relative to `working-directory`; every listed file must exist; empty installs nothing |
+| `working-directory` | `.` | Folder holding the requirements files and the tests |
+
+A requirement not pinned with `==` produces a warning, not a failure. As with rust-ci the gate is the project's.
 
 ### docker-build inputs
 
