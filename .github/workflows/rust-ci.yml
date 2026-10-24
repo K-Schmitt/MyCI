@@ -15,19 +15,92 @@ on:
         description: cargo-deny version installed when the project has a deny.toml
         type: string
         default: 0.20.2
+      os:
+        description: JSON array of GitHub-hosted runner labels (ubuntu-latest, windows-latest, macos-latest); one job per label
+        type: string
+        default: '["ubuntu-latest"]'
+      apt-packages:
+        description: Space-separated Debian packages installed on Linux runners before the build (e.g. system libraries)
+        type: string
+        default: ""
+      node-working-directory:
+        description: Folder holding a package-lock.json, relative to the repository root; when set, Node is installed and `npm ci` runs there
+        type: string
+        default: ""
+      node-version:
+        description: Node.js version used with node-working-directory, ignored when that folder has an .nvmrc
+        type: string
+        default: "22"
+      timeout-minutes:
+        description: Timeout of each job of the matrix
+        type: number
+        default: 30
 
 permissions:
   contents: read
 
 jobs:
-  rust-ci:
+  validate:
+    # Inputs reach `runs-on` and shell commands: refuse anything outside the allow-lists
+    # before a runner is chosen.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      os: ${{ steps.validate.outputs.os }}
+      default-os: ${{ steps.validate.outputs.default-os }}
+    steps:
+      - name: Validate inputs
+        id: validate
+        env:
+          OS_INPUT: ${{ inputs.os }}
+          APT_PACKAGES: ${{ inputs.apt-packages }}
+          NODE_DIR: ${{ inputs.node-working-directory }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          allowed='["ubuntu-latest","windows-latest","macos-latest"]'
+          if ! os=$(jq -nce --argjson allowed "$allowed" --argjson v "$OS_INPUT" \
+              '$v | if type == "array" and length > 0 and all(.[]; type == "string" and IN($allowed[])) then unique else false end' \
+              2>/dev/null); then
+            echo "::error::Input 'os' must be a non-empty JSON array of runner labels from ${allowed}, got: $(printf '%q' "$OS_INPUT")"
+            exit 1
+          fi
+          apt_re='^[a-z0-9][a-z0-9+.:-]*( [a-z0-9][a-z0-9+.:-]*)*$'
+          if [ -n "$APT_PACKAGES" ] && ! [[ $APT_PACKAGES =~ $apt_re ]]; then
+            echo "::error::Input 'apt-packages' must be Debian package names separated by single spaces, got: $(printf '%q' "$APT_PACKAGES")"
+            exit 1
+          fi
+          dir_re='^[A-Za-z0-9._][A-Za-z0-9._/-]*$'
+          if [ -n "$NODE_DIR" ] && { ! [[ $NODE_DIR =~ $dir_re ]] || [[ /$NODE_DIR/ == */../* ]]; }; then
+            echo "::error::Input 'node-working-directory' must be a relative path inside the repository, got: $(printf '%q' "$NODE_DIR")"
+            exit 1
+          fi
+          default_os=false
+          if [ "$os" = '["ubuntu-latest"]' ]; then default_os=true; fi
+          {
+            echo "os=$os"
+            echo "default-os=$default_os"
+          } >> "$GITHUB_OUTPUT"
+          echo "Runners: $os"
+
+  rust-ci:
+    needs: validate
+    # The default single-OS run keeps its historical check name `rust-ci`.
+    name: rust-ci${{ needs.validate.outputs.default-os != 'true' && format(' ({0})', matrix.os) || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.validate.outputs.os) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     concurrency:
-      group: rust-ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}
+      group: rust-ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}-${{ matrix.os }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     defaults:
       run:
+        # Git Bash on Windows, so every script below runs unchanged on all runners.
+        shell: bash
         working-directory: ${{ inputs.working-directory }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,6 +124,17 @@ jobs:
           echo "has-deny=$has_deny" >> "$GITHUB_OUTPUT"
           echo "Detected a pinned Rust project (cargo-deny: $has_deny)"
 
+      - name: Install apt packages
+        id: apt
+        if: runner.os == 'Linux' && inputs.apt-packages != ''
+        env:
+          APT_PACKAGES: ${{ inputs.apt-packages }}
+        run: |
+          set -euo pipefail
+          read -ra packages <<< "$APT_PACKAGES"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
+
       - name: Install pinned toolchain
         run: rustup toolchain install
 
@@ -63,6 +147,41 @@ jobs:
         uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
           tool: cargo-deny@${{ inputs.deny-version }}
+
+      - name: Detect Node project
+        id: node-detect
+        if: inputs.node-working-directory != ''
+        working-directory: .
+        env:
+          NODE_DIR: ${{ inputs.node-working-directory }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "${NODE_DIR}/package-lock.json" ]; then
+            echo "::error::No package-lock.json in '${NODE_DIR}': commit it so npm ci installs what you tested"
+            exit 1
+          fi
+          nvmrc=""
+          if [ -f "${NODE_DIR}/.nvmrc" ]; then nvmrc="${NODE_DIR}/.nvmrc"; fi
+          {
+            echo "lockfile=${NODE_DIR}/package-lock.json"
+            echo "nvmrc=$nvmrc"
+          } >> "$GITHUB_OUTPUT"
+          echo "Detected an npm project in '${NODE_DIR}'"
+
+      - name: Set up Node.js
+        if: inputs.node-working-directory != ''
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.node-detect.outputs.nvmrc == '' && inputs.node-version || '' }}
+          node-version-file: ${{ steps.node-detect.outputs.nvmrc }}
+          cache: npm
+          cache-dependency-path: ${{ steps.node-detect.outputs.lockfile }}
+
+      - name: Install Node dependencies
+        id: npm-ci
+        if: inputs.node-working-directory != ''
+        working-directory: ${{ inputs.node-working-directory }}
+        run: npm ci
 
       - name: Run gate
         id: gate
@@ -77,6 +196,7 @@ jobs:
           GATE: ${{ inputs.gate }}
           GATE_OUTCOME: ${{ steps.gate.outcome }}
           HAS_DENY: ${{ steps.detect.outputs.has-deny }}
+          OS_LABEL: ${{ needs.validate.outputs.default-os != 'true' && matrix.os || '' }}
         run: |
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
           case "$GATE_OUTCOME" in
@@ -87,7 +207,7 @@ jobs:
           deny=no
           if [ "$HAS_DENY" = true ]; then deny=yes; fi
           {
-            echo "### rust-ci"
+            echo "### rust-ci${OS_LABEL:+ (${OS_LABEL})}"
             echo "Toolchain: \`$(rustc --version 2>/dev/null || echo none)\` · cargo-deny: ${deny}"
             echo
             echo "| Gate | Result |"
