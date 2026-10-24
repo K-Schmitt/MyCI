@@ -40,6 +40,18 @@ jobs:
       working-directory: fixtures/rust-ok
       gate: cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && cargo deny check
 
+  rust-matrix:
+    # Every optional input at once: two OSes, an apt package on Linux, Node from a lockfile.
+    uses: ./.github/workflows/rust-ci.yml
+    with:
+      working-directory: fixtures/rust-ok
+      os: '["ubuntu-latest","windows-latest"]'
+      apt-packages: tree
+      node-working-directory: fixtures/node-npm
+      gate: >-
+        cargo fmt --check && cargo test --locked && cargo deny check && node --version &&
+        if [ "$RUNNER_OS" = Linux ]; then tree --version; fi
+
   python:
     uses: ./.github/workflows/python-ci.yml
     with:
@@ -84,12 +96,14 @@ jobs:
           gh run view "$id" --json jobs > jobs.json
 
           status=0
-          # job prefix | step that must be the failing one
-          for pair in "broken|Test" "missing-script|Check required scripts" "nolock|Detect package manager" "rust-broken|Run gate" "rust-no-toolchain|Detect Rust project" "rust-no-lock|Detect Rust project" "python-broken|Run gate" "python-no-requirements|Detect Python project"; do
+          # job prefix | step that must be the failing one. A caller job expands to several
+          # "<caller> / <called>" jobs (rust-ci adds "validate" and matrix legs), so the failed one
+          # is asserted; when none failed, the first one reports why.
+          for pair in "broken|Test" "missing-script|Check required scripts" "nolock|Detect package manager" "rust-broken|Run gate" "rust-no-toolchain|Detect Rust project" "rust-no-lock|Detect Rust project" "rust-bad-os|Validate inputs" "rust-bad-apt|Validate inputs" "rust-node-no-lock|Detect Node project" "python-broken|Run gate" "python-no-requirements|Detect Python project"; do
             job=${pair%%|*}
             want=${pair#*|}
             got=$(jq -r --arg p "${job} /" \
-              '[.jobs[] | select(.name | startswith($p))][0] | "\(.conclusion)|\([.steps[] | select(.conclusion == "failure") | .name][0])"' \
+              '[.jobs[] | select(.name | startswith($p))] | (map(select(.conclusion == "failure"))[0] // .[0]) | "\(.conclusion)|\([.steps[] | select(.conclusion == "failure") | .name][0])"' \
               jobs.json)
             if [ "$got" = "failure|${want}" ]; then
               echo "OK   ${job}: failed at '${want}'"
