@@ -42,9 +42,18 @@ push to main ──► node-ci ──┐
 | `gate` | `cargo xtask check` | The project's quality gate; any command that exits non-zero on failure. Projects without an `xtask` pass their own, e.g. `cargo clippy --locked -- -D warnings && cargo test --locked` |
 | `working-directory` | `.` | Folder holding `Cargo.lock` and `rust-toolchain.toml` |
 | `deny-version` | `0.20.2` | Only used when a `deny.toml` exists |
+| `os` | `["ubuntu-latest"]` | JSON array of runners, one job per entry (`fail-fast: false`). Only `ubuntu-latest`, `windows-latest` and `macos-latest` are accepted; anything else fails the `validate` job before a runner is picked |
+| `apt-packages` | `""` | Space-separated Debian packages, installed on Linux runners only (`apt-get install --no-install-recommends`), e.g. a Tauri app's `libwebkit2gtk-4.1-dev` |
+| `node-working-directory` | `""` | Folder (from the repository root) with a `package-lock.json`: Node is set up with an npm cache and `npm ci` runs there before the gate, for gates that also check a web UI |
+| `node-version` | `22` | Only with `node-working-directory`; ignored when that folder has an `.nvmrc` |
+| `timeout-minutes` | `30` | Per job; a cold Windows build of a large workspace may need more |
 
-The gate is the project's, not MyCI's: when it changes, CI follows without touching MyCI. Linux only for
-now; system libraries and other operating systems are added when a project needs them.
+The gate is the project's, not MyCI's: when it changes, CI follows without touching MyCI. With the
+defaults the run is the historical one: a single Ubuntu job named `rust-ci`. With several runners each
+job is named `rust-ci (<runner>)`, has its own concurrency group and its own summary. Every `run:` step
+uses `bash` (Git Bash on Windows), so the gate is a bash command on every OS. Windows and macOS runners
+consume included minutes faster on private repositories (check GitHub's current multipliers): restrict them in the caller,
+see [`examples/caller-rust.yml`](examples/caller-rust.yml).
 
 ### python-ci inputs
 
@@ -76,7 +85,8 @@ A requirement not pinned with `==` produces a warning, not a failure. As with ru
 ## Use it in a project
 
 1. Copy [`examples/caller-node-coolify.yml`](examples/caller-node-coolify.yml) (Node + Coolify) or
-   [`examples/caller-rust.yml`](examples/caller-rust.yml) (Rust, CI only) to `.github/workflows/ci.yml`.
+   [`examples/caller-rust.yml`](examples/caller-rust.yml) (Rust, CI only) or
+   [`examples/caller-rust-tauri.yml`](examples/caller-rust-tauri.yml) (Tauri app, Linux + Windows) to `.github/workflows/ci.yml`.
    If the production branch is not `main`, change the `branches:` line only.
 2. In Coolify: **Keys & Tokens → API tokens**, create a token with **read** and **deploy** only
    (never `root` or `write`): `deploy` triggers the deployment, `read` follows it. Coolify tokens are
