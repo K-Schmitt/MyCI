@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Runs the exact `run:` scripts of rust-ci.yml (detect, summary) against the fixtures.
+# Runs the exact `run:` scripts of rust-ci.yml (validate, detect, node-detect, summary) against the fixtures.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 wf="$root/.github/workflows/rust-ci.yml"
-for step in detect summary; do
+for step in detect node-detect summary; do
   python3 "$root/tests/lib/extract-step.py" "$wf" rust-ci "$step" > "$work/$step.sh" || exit 1
 done
+python3 "$root/tests/lib/extract-step.py" "$wf" validate validate > "$work/validate.sh" || exit 1
 
 failures=0
 total=0
@@ -64,6 +65,55 @@ check "summary: red gate" eval '[ $code = 0 ] && has "$summary" "❌ failed" && 
 
 run_step summary "$fx/rust-ok" fixtures/rust-ok "GATE=cargo test" "GATE_OUTCOME=skipped" "HAS_DENY="
 check "summary: gate never ran" eval '[ $code = 0 ] && has "$summary" "⏭️ not run"'
+
+run_step summary "$fx/rust-ok" fixtures/rust-ok "GATE=cargo test" "GATE_OUTCOME=success" "HAS_DENY=true" "OS_LABEL=windows-latest"
+check "summary: a multi-OS leg names its runner in the heading" eval 'has "$summary" "### rust-ci (windows-latest)"'
+
+run_step summary "$fx/rust-ok" fixtures/rust-ok "GATE=cargo test" "GATE_OUTCOME=success" "HAS_DENY=true" "OS_LABEL="
+check "summary: the default single-OS heading is unchanged" eval 'grep -qx "### rust-ci" <<< "$summary"'
+
+# validate runs before any runner is chosen, from the repository root.
+default_inputs=('OS_INPUT=["ubuntu-latest"]' "APT_PACKAGES=" "NODE_DIR=")
+
+run_step validate "$root" . "${default_inputs[@]}"
+check "validate: defaults pass and keep the single-OS label" eval '[ $code = 0 ] && grep -qx "os=\[\"ubuntu-latest\"\]" <<< "$outputs" && grep -qx "default-os=true" <<< "$outputs"'
+
+run_step validate "$root" . 'OS_INPUT=["windows-latest","ubuntu-latest","windows-latest"]' "APT_PACKAGES=" "NODE_DIR="
+check "validate: a multi-OS list is deduplicated and flagged" eval '[ $code = 0 ] && grep -qx "os=\[\"ubuntu-latest\",\"windows-latest\"\]" <<< "$outputs" && grep -qx "default-os=false" <<< "$outputs"'
+
+for bad in '["self-hosted"]' '["ubuntu-latest","my-runner"]' '[]' '"ubuntu-latest"' 'ubuntu-latest' '[["ubuntu-latest"]]' '["ubuntu-latest"] ["self-hosted"]'; do
+  run_step validate "$root" . "OS_INPUT=$bad" "APT_PACKAGES=" "NODE_DIR="
+  check "validate: os rejects $bad" eval '[ $code = 1 ] && has "$out" "::error::Input '"'"'os'"'"'" && [ -z "$outputs" ]'
+done
+
+run_step validate "$root" . 'OS_INPUT=["ubuntu-latest"]' "APT_PACKAGES=libwebkit2gtk-4.1-dev libdbus-1-dev g++ libfoo:amd64" "NODE_DIR=apps/desktop"
+check "validate: Debian package names and a relative node directory pass" eval '[ $code = 0 ]'
+
+for bad in 'libfoo; rm -rf /' '-o APT::Get::foo' 'libfoo  libbar' ' libfoo' 'LibFoo' 'libfoo $(id)'; do
+  run_step validate "$root" . 'OS_INPUT=["ubuntu-latest"]' "APT_PACKAGES=$bad" "NODE_DIR="
+  check "validate: apt-packages rejects '$bad'" eval '[ $code = 1 ] && has "$out" "::error::Input '"'"'apt-packages'"'"'"'
+done
+
+for bad in '/abs' '../outside' 'a/../../b' $'apps\nos=x' 'a b'; do
+  run_step validate "$root" . 'OS_INPUT=["ubuntu-latest"]' "APT_PACKAGES=" "NODE_DIR=$bad"
+  check "validate: node-working-directory rejects '$bad'" eval '[ $code = 1 ] && has "$out" "::error::Input '"'"'node-working-directory'"'"'"'
+done
+
+# node-detect runs from the repository root, like setup-node's paths.
+run_step node-detect "$root" . "NODE_DIR=fixtures/node-npm"
+check "node-detect: lockfile found, no .nvmrc" eval '[ $code = 0 ] && grep -qx "lockfile=fixtures/node-npm/package-lock.json" <<< "$outputs" && grep -qx "nvmrc=" <<< "$outputs"'
+
+mkdir -p "$work/repo/ui"
+cp "$fx/node-npm/package.json" "$fx/node-npm/package-lock.json" "$work/repo/ui/"
+echo 22 > "$work/repo/ui/.nvmrc"
+run_step node-detect "$work/repo" . "NODE_DIR=ui"
+check "node-detect: .nvmrc is honoured" eval '[ $code = 0 ] && grep -qx "nvmrc=ui/.nvmrc" <<< "$outputs"'
+
+run_step node-detect "$root" . "NODE_DIR=fixtures/node-nolock"
+check "node-detect: missing package-lock.json fails and names the folder" eval '[ $code = 1 ] && has "$out" "No package-lock.json in '"'"'fixtures/node-nolock'"'"'"'
+
+run_step node-detect "$root" . "NODE_DIR=fixtures/does-not-exist"
+check "node-detect: missing folder fails and names it" eval '[ $code = 1 ] && has "$out" "No package-lock.json in '"'"'fixtures/does-not-exist'"'"'"'
 
 echo "rust-ci: $((total - failures))/$total passed"
 [ "$failures" -eq 0 ]

