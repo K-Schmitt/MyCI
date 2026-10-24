@@ -95,7 +95,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     concurrency:
-      group: rust-ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}-${{ matrix.os }}
+      # The whole `os` list is part of the group: two callers in one workflow that share a
+      # working directory but run different matrices (self-test) must not cancel each other.
+      group: rust-ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}-${{ inputs.os }}-${{ matrix.os }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     defaults:
       run:
