@@ -5,3 +5,5 @@ dist/
 docs/superpowers/
 TASKS.md
 target/
+__pycache__/
+.pytest_cache/
