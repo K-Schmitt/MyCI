@@ -41,3 +41,11 @@ jobs:
     with:
       working-directory: fixtures/rust-no-lock
       gate: cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && cargo deny check
+  python-broken:
+    uses: ./.github/workflows/python-ci.yml
+    with:
+      working-directory: fixtures/python-broken
+  python-no-requirements:
+    uses: ./.github/workflows/python-ci.yml
+    with:
+      working-directory: fixtures/python-no-requirements

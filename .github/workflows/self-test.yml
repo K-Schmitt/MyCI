@@ -40,6 +40,11 @@ jobs:
       working-directory: fixtures/rust-ok
       gate: cargo fmt --check && cargo clippy --locked --all-targets -- -D warnings && cargo test --locked && cargo deny check
 
+  python:
+    uses: ./.github/workflows/python-ci.yml
+    with:
+      working-directory: fixtures/python-ok
+
   docker:
     uses: ./.github/workflows/docker-build.yml
     with:
@@ -80,7 +85,7 @@ jobs:
 
           status=0
           # job prefix | step that must be the failing one
-          for pair in "broken|Test" "missing-script|Check required scripts" "nolock|Detect package manager" "rust-broken|Run gate" "rust-no-toolchain|Detect Rust project" "rust-no-lock|Detect Rust project"; do
+          for pair in "broken|Test" "missing-script|Check required scripts" "nolock|Detect package manager" "rust-broken|Run gate" "rust-no-toolchain|Detect Rust project" "rust-no-lock|Detect Rust project" "python-broken|Run gate" "python-no-requirements|Detect Python project"; do
             job=${pair%%|*}
             want=${pair#*|}
             got=$(jq -r --arg p "${job} /" \
