@@ -1,0 +1,26 @@
+# Copy to <your-project>/.github/workflows/ci.yml for a Tauri v2 app (Rust workspace + npm web UI).
+# Ubuntu runs on every push and PR. Windows runs on push to main, on manual runs, and on PRs labelled
+# `windows` (adding the label re-runs CI). To run Windows on every PR instead, set `os` to the JSON
+# array directly: os: '["ubuntu-latest","windows-latest"]'.
+name: CI
+
+on:
+  push:
+    branches: [main] # your production branch
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: K-Schmitt/MyCI/.github/workflows/rust-ci.yml@v1
+    with:
+      os: >-
+        ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'windows'))
+        && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]' }}
+      # webkit2gtk pulls in GTK 3 and libsoup 3; tao links libdbus through the dbus crate.
+      apt-packages: libwebkit2gtk-4.1-dev libdbus-1-dev
+      node-working-directory: apps/desktop
