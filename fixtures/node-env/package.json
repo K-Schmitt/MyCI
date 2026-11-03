@@ -1,0 +1,9 @@
+{
+  "name": "fixture-node-env",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "type-check": "node --check src/index.js",
+    "test": "node -e \"process.exit(process.env.FIXTURE_FLAG === '1' ? 0 : 1)\""
+  }
+}

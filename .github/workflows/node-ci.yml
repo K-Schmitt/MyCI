@@ -11,6 +11,18 @@ on:
         description: Comma-separated package.json scripts that must exist
         type: string
         default: lint,build
+      scripts:
+        description: Comma-separated package.json scripts to run, in order; a script that does not exist is reported as absent
+        type: string
+        default: lint,typecheck,test,build
+      env:
+        description: Environment for the scripts, one KEY=VALUE per line; public values only (VITE_*, NEXT_PUBLIC_*), never a secret
+        type: string
+        default: ""
+      audit:
+        description: Fail on production dependencies with a known vulnerability of at least this severity (none, low, moderate, high, critical)
+        type: string
+        default: none
       pnpm-version:
         description: pnpm version, used only when package.json has no packageManager field
         type: string
@@ -35,6 +47,62 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate inputs
+        id: validate
+        working-directory: .
+        env:
+          WORKDIR: ${{ inputs.working-directory }}
+          SCRIPTS: ${{ inputs.scripts }}
+          REQUIRE: ${{ inputs.require }}
+          AUDIT: ${{ inputs.audit }}
+          BUILD_ENV: ${{ inputs.env }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          dir_re='^[A-Za-z0-9._][A-Za-z0-9._/-]*$'
+          if ! [[ $WORKDIR =~ $dir_re ]] || [[ /$WORKDIR/ == */../* ]]; then
+            echo "::error::Input 'working-directory' must be a relative path inside the repository, got: $(printf '%q' "$WORKDIR")"
+            exit 1
+          fi
+          # A comma-separated script list, trimmed, without empties and duplicates, names checked.
+          script_list() { # <input name> <value>: prints the names space-separated
+            local name seen=" " kept=()
+            IFS=',' read -ra raw <<< "$2"
+            for name in "${raw[@]}"; do
+              name=${name#"${name%%[![:space:]]*}"}
+              name=${name%"${name##*[![:space:]]}"}
+              [ -n "$name" ] || continue
+              if ! [[ $name =~ ^[A-Za-z0-9_:.-]+$ ]]; then
+                echo "::error::Input '$1' must be comma-separated package.json script names, got: $(printf '%q' "$name")" >&2
+                return 1
+              fi
+              case "$seen" in *" ${name} "*) continue ;; esac
+              seen="${seen}${name} "
+              kept+=("$name")
+            done
+            echo "${kept[*]:-}"
+          }
+          names=$(script_list scripts "$SCRIPTS")
+          require=$(script_list require "$REQUIRE")
+          case "$AUDIT" in
+            none | low | moderate | high | critical) ;;
+            *)
+              echo "::error::Input 'audit' must be one of none, low, moderate, high, critical, got: $(printf '%q' "$AUDIT")"
+              exit 1 ;;
+          esac
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            if ! [[ $line =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+              echo "::error::Input 'env' must be KEY=VALUE lines, got: $(printf '%q' "$line")"
+              exit 1
+            fi
+          done <<< "$BUILD_ENV"
+          {
+            echo "names=${names}"
+            echo "require=${require}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Scripts: ${names:-none} (required: ${require:-none})"
 
       - name: Detect package manager
         id: detect
@@ -94,56 +162,93 @@ jobs:
         run: |
           if [ "$PM" = pnpm ]; then pnpm install --frozen-lockfile; else npm ci; fi
 
+      - name: Audit production dependencies
+        id: audit
+        if: inputs.audit != 'none'
+        env:
+          PM: ${{ steps.detect.outputs.pm }}
+          AUDIT: ${{ inputs.audit }}
+        run: |
+          set -euo pipefail
+          if [ "$PM" = pnpm ]; then
+            pnpm audit --prod --audit-level="$AUDIT"
+          else
+            npm audit --omit=dev --audit-level="$AUDIT"
+          fi
+
       - name: Check required scripts
         id: require
         env:
-          REQUIRE: ${{ inputs.require }}
+          REQUIRE_NAMES: ${{ steps.validate.outputs.require }}
         run: |
           set -euo pipefail
+          read -ra wanted <<< "$REQUIRE_NAMES"
+          [ ${#wanted[@]} -gt 0 ] || exit 0
+          present=$(node -e 'const s = require("./package.json").scripts || {}; console.log(process.argv.slice(1).filter(n => Object.hasOwn(s, n)).join(" "))' "${wanted[@]}")
           missing=()
-          IFS=',' read -ra wanted <<< "$REQUIRE"
           for script in "${wanted[@]}"; do
-            script="${script// /}"
-            [ -n "$script" ] || continue
-            node -e 'process.exit((require("./package.json").scripts || {})[process.argv[1]] ? 0 : 1)' "$script" \
-              || missing+=("$script")
+            case " ${present} " in *" ${script} "*) ;; *) missing+=("$script") ;; esac
           done
           if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::Required package.json scripts missing: ${missing[*]} (require: '${REQUIRE}')"
+            echo "::error::Required package.json scripts missing: ${missing[*]} (require: '${REQUIRE_NAMES}')"
             exit 1
           fi
 
-      - name: Lint
-        id: lint
+      - name: Run scripts
+        id: scripts
         env:
           PM: ${{ steps.detect.outputs.pm }}
-        run: '"$PM" run --if-present lint'
-      - name: Typecheck
-        id: typecheck
-        env:
-          PM: ${{ steps.detect.outputs.pm }}
-        run: '"$PM" run --if-present typecheck'
-      - name: Test
-        id: test
-        env:
-          PM: ${{ steps.detect.outputs.pm }}
-        run: '"$PM" run --if-present test'
-      - name: Build
-        id: build
-        env:
-          PM: ${{ steps.detect.outputs.pm }}
-        run: '"$PM" run --if-present build'
+          NAMES: ${{ steps.validate.outputs.names }}
+          BUILD_ENV: ${{ inputs.env }}
+        run: |
+          set -uo pipefail
+          # The caller's variables exist for this step only: the install above ran without them.
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            export "${line?}"
+            echo "env: ${line%%=*}"
+          done <<< "$BUILD_ENV"
+          read -ra names <<< "$NAMES"
+          present=""
+          if [ ${#names[@]} -gt 0 ]; then
+            present=$(node -e 'const s = require("./package.json").scripts || {}; console.log(process.argv.slice(1).filter(n => Object.hasOwn(s, n)).join(" "))' "${names[@]}")
+          fi
+          results=()
+          failed=""
+          for name in "${names[@]}"; do
+            if [ -n "$failed" ]; then
+              results+=("${name}=skipped")
+              continue
+            fi
+            case " ${present} " in
+              *" ${name} "*) ;;
+              *)
+                results+=("${name}=absent")
+                echo "${name}: no such script in package.json, skipped"
+                continue ;;
+            esac
+            echo "::group::${PM} run ${name}"
+            if "$PM" run "$name"; then
+              results+=("${name}=success")
+            else
+              results+=("${name}=failure")
+              failed=$name
+            fi
+            echo "::endgroup::"
+          done
+          echo "results=${results[*]:-}" >> "$GITHUB_OUTPUT"
+          if [ -n "$failed" ]; then
+            echo "::error::Script '${failed}' failed"
+            exit 1
+          fi
 
       - name: Summary
         id: summary
         if: always()
         env:
           PM: ${{ steps.detect.outputs.pm }}
-          OUTCOMES: >-
-            lint=${{ steps.lint.outcome }}
-            typecheck=${{ steps.typecheck.outcome }}
-            test=${{ steps.test.outcome }}
-            build=${{ steps.build.outcome }}
+          NAMES: ${{ steps.validate.outputs.names }}
+          RESULTS: ${{ steps.scripts.outputs.results }}
         run: |
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
           {
@@ -153,18 +258,17 @@ jobs:
             echo "| Script | Result |"
             echo "|---|---|"
           } >> "$summary"
-          for pair in $OUTCOMES; do
-            name=${pair%%=*}
-            outcome=${pair#*=}
-            if [ -f package.json ] && ! node -e 'process.exit((require("./package.json").scripts || {})[process.argv[1]] ? 0 : 1)' "$name" 2>/dev/null; then
-              result="⚠️ absent"
-            else
-              case "$outcome" in
-                success) result="✅ passed" ;;
-                failure) result="❌ failed" ;;
-                *) result="⏭️ not run" ;;
-              esac
-            fi
-            echo "| ${name} | ${result} |" >> "$summary"
-            echo "${name}: ${result}"
+          declare -A result=()
+          for pair in $RESULTS; do
+            result[${pair%%=*}]=${pair#*=}
+          done
+          for name in $NAMES; do
+            case "${result[$name]:-}" in
+              success) text="✅ passed" ;;
+              failure) text="❌ failed" ;;
+              absent) text="⚠️ absent" ;;
+              *) text="⏭️ not run" ;;
+            esac
+            echo "| ${name} | ${text} |" >> "$summary"
+            echo "${name}: ${text}"
           done
