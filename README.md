@@ -154,8 +154,12 @@ A failure message names the deployment uuid and the elapsed time, so the Coolify
    gh variable set COOLIFY_APP_UUID --body <application uuid>
    gh secret set COOLIFY_TOKEN        # paste the token when prompted
    ```
-4. Push once with Coolify auto-deploy still on and check the `deploy` job is green.
-5. Turn off **Auto Deploy** for the application in Coolify. From now on, only green CI deploys.
+4. Project-specific checks: unit tests run through the project's own `test` script (node-ci) or `gate`
+   input (rust-ci, python-ci). Anything else (e2e, migrations, a side service) is a job of your own in
+   the caller; add it to the `deploy` job's `needs` so a red check blocks the deployment
+   (commented example in [`examples/caller-node-coolify.yml`](examples/caller-node-coolify.yml)).
+5. Push once with Coolify auto-deploy still on and check the `deploy` job is green.
+6. Turn off **Auto Deploy** for the application in Coolify. From now on, only green CI deploys.
 
 ## Versioning
 

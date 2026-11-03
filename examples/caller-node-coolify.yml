@@ -29,8 +29,15 @@ jobs:
   infra:
     # shellcheck, hadolint, docker compose config, actionlint, ansible-lint on what the repository holds
     uses: K-Schmitt/MyCI/.github/workflows/lint-infra.yml@v1
+  # Project-specific checks MyCI does not cover (e2e, database migration, extra service):
+  # a plain job of your own, then add it to deploy.needs so a red check blocks the deploy.
+  # e2e:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@<commit sha> # vX.Y.Z
+  #     - run: npm ci && npm run test:e2e
   deploy:
-    needs: [ci, docker, infra]
+    needs: [ci, docker, infra] # add e2e here
     if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
     uses: K-Schmitt/MyCI/.github/workflows/deploy-coolify.yml@v1
     with:
