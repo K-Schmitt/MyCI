@@ -1,4 +1,5 @@
 node_modules/
+!fixtures/infra-ok/node_modules/
 dist/
 .draft/
 .superpowers/
@@ -7,3 +8,6 @@ TASKS.md
 target/
 __pycache__/
 .pytest_cache/
+.gradle/
+build/
+local.properties
