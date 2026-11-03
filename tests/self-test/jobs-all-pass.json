@@ -1,0 +1,25 @@
+{
+  "jobs": [
+    {
+      "name": "broken / node-ci",
+      "conclusion": "failure",
+      "steps": [
+        {"name": "Set up job", "conclusion": "success"},
+        {"name": "Lint", "conclusion": "success"},
+        {"name": "Run scripts", "conclusion": "failure"},
+        {"name": "Summary", "conclusion": "success"}
+      ]
+    },
+    {
+      "name": "rust-bad-os / validate",
+      "conclusion": "failure",
+      "steps": [
+        {"name": "Validate inputs", "conclusion": "failure"}
+      ]
+    },
+    {
+      "name": "rust-bad-os / rust-ci",
+      "conclusion": "skipped"
+    }
+  ]
+}

@@ -27,6 +27,16 @@ jobs:
     with:
       working-directory: fixtures/node-npm
       require: lint,typecheck,test,build
+      audit: high
+
+  npm-env:
+    # Renamed scripts, an absent one, and a build variable the test needs.
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-env
+      scripts: lint,type-check,test
+      require: type-check
+      env: FIXTURE_FLAG=1
 
   pnpm:
     uses: ./.github/workflows/node-ci.yml
@@ -57,21 +67,42 @@ jobs:
     with:
       working-directory: fixtures/python-ok
 
+  android:
+    uses: ./.github/workflows/android-ci.yml
+    with:
+      working-directory: fixtures/android-ok
+
+  lint-infra:
+    uses: ./.github/workflows/lint-infra.yml
+    with:
+      working-directory: fixtures/infra-ok
+
   docker:
     uses: ./.github/workflows/docker-build.yml
     with:
       context: fixtures/node-npm
 
+  docker-target:
+    # Every build input at once: a stage, a build argument, and a smoke test on the loaded image.
+    uses: ./.github/workflows/docker-build.yml
+    with:
+      context: fixtures/docker-ok
+      target: production
+      build-args: GREETING=hello-from-ci
+      smoke: docker run --rm "$IMAGE" | grep -q hello-from-ci
+
   negative:
     # A fork's GITHUB_TOKEN cannot dispatch workflows.
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Longer than the slowest negative job: android-broken builds cold (android-ci allows 30 min).
+    timeout-minutes: 40
     permissions:
       actions: write
       contents: read
     steps:
-      - name: Dispatch negative-fixture and assert each job failed for its reason
+      - name: Dispatch negative-fixture and wait for it
+        id: dispatch
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -95,21 +126,69 @@ jobs:
           gh run watch "$id" --interval 10 > /dev/null || true
           gh run view "$id" --json jobs > jobs.json
 
-          status=0
+      - name: Assert each negative job failed for its reason
+        id: assert
+        env:
           # job prefix | step that must be the failing one. A caller job expands to several
           # "<caller> / <called>" jobs (rust-ci adds "validate" and matrix legs), so the failed one
           # is asserted; when none failed, the first one reports why.
-          for pair in "broken|Test" "missing-script|Check required scripts" "nolock|Detect package manager" "rust-broken|Run gate" "rust-no-toolchain|Detect Rust project" "rust-no-lock|Detect Rust project" "rust-bad-os|Validate inputs" "rust-bad-apt|Validate inputs" "rust-node-no-lock|Detect Node project" "python-broken|Run gate" "python-no-requirements|Detect Python project"; do
-            job=${pair%%|*}
-            want=${pair#*|}
+          EXPECTED: |
+            broken|Run scripts
+            missing-script|Check required scripts
+            nolock|Detect package manager
+            rust-broken|Run gate
+            rust-no-toolchain|Detect Rust project
+            rust-no-lock|Detect Rust project
+            rust-bad-os|Validate inputs
+            rust-bad-apt|Validate inputs
+            rust-node-no-lock|Detect Node project
+            python-broken|Run gate
+            python-no-requirements|Detect Python project
+            node-env-missing|Run scripts
+            node-bad-scripts|Validate inputs
+            node-bad-env|Validate inputs
+            node-audit-fail|Audit production dependencies
+            docker-bad-target|Build image
+            docker-bad-args|Validate inputs
+            docker-smoke-fail|Smoke test
+            android-broken|Run gate
+            android-no-wrapper|Detect Android project
+            infra-bad-severity|Validate inputs
+            infra-bad-shell|shellcheck
+            infra-bad-dockerfile|hadolint
+            infra-bad-compose|docker compose config
+            infra-bad-workflow|actionlint
+            infra-bad-ansible|ansible-lint
+        run: |
+          set -uo pipefail
+          status=0
+          while IFS='|' read -r job want; do
+            [ -n "$job" ] || continue
             got=$(jq -r --arg p "${job} /" \
-              '[.jobs[] | select(.name | startswith($p))] | (map(select(.conclusion == "failure"))[0] // .[0]) | "\(.conclusion)|\([.steps[] | select(.conclusion == "failure") | .name][0])"' \
+              '[.jobs[] | select(.name | startswith($p))]
+               | if length == 0 then "none"
+                 else (map(select(.conclusion == "failure"))[0] // .[0])
+                   | "\(.conclusion)|\([(.steps // [])[] | select(.conclusion == "failure") | .name][0])"
+                 end' \
               jobs.json)
             if [ "$got" = "failure|${want}" ]; then
               echo "OK   ${job}: failed at '${want}'"
+            elif [ "$got" = none ]; then
+              echo "::error::${job}: no job named '${job} / …' in the negative-fixture run"
+              status=1
             else
               echo "::error::${job}: expected failure at '${want}', got '${got}'"
               status=1
             fi
-          done
+          done <<< "$EXPECTED"
+          # Every job of the run needs a row: one added to negative-fixture.yml without a row
+          # would never be asserted, and a fixture that silently passes would stay invisible.
+          expected_jobs=$(printf '%s\n' "$EXPECTED" | cut -d'|' -f1)
+          while read -r job; do
+            [ -n "$job" ] || continue
+            if ! grep -qx "$job" <<< "$expected_jobs"; then
+              echo "::error::${job}: no EXPECTED row for this negative-fixture job"
+              status=1
+            fi
+          done < <(jq -r '[.jobs[].name | split(" / ")[0]] | unique[]' jobs.json)
           exit "$status"
