@@ -1,0 +1,8 @@
+# Not run by GitHub (not at the repository root): a file for lint-infra's actionlint step.
+name: ok
+on: push
+jobs:
+  ok:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok

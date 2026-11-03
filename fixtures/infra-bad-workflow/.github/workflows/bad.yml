@@ -1,0 +1,8 @@
+# Not run by GitHub (not at the repository root): an invalid file for lint-infra's actionlint step.
+on: push
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo $UNDEFINED_THING_
+    bogus: 1
