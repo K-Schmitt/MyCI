@@ -26,6 +26,28 @@ jobs:
     uses: ./.github/workflows/node-ci.yml
     with:
       working-directory: fixtures/node-nolock
+  node-env-missing:
+    # The same fixture self-test runs with `env: FIXTURE_FLAG=1`, without it.
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-env
+      scripts: type-check,test
+      require: type-check
+  node-bad-scripts:
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-npm
+      scripts: lint;rm -rf /
+  node-bad-env:
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-npm
+      env: 1BAD=x
+  node-audit-fail:
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-vulnerable
+      audit: high
   rust-broken:
     uses: ./.github/workflows/rust-ci.yml
     with:
@@ -65,3 +87,54 @@ jobs:
     uses: ./.github/workflows/python-ci.yml
     with:
       working-directory: fixtures/python-no-requirements
+  docker-bad-target:
+    uses: ./.github/workflows/docker-build.yml
+    with:
+      context: fixtures/docker-ok
+      target: missing
+  docker-bad-args:
+    uses: ./.github/workflows/docker-build.yml
+    with:
+      context: fixtures/docker-ok
+      build-args: 1BAD=x
+  docker-smoke-fail:
+    uses: ./.github/workflows/docker-build.yml
+    with:
+      context: fixtures/docker-ok
+      target: production
+      smoke: docker run --rm "$IMAGE" | grep -q nope
+  android-broken:
+    uses: ./.github/workflows/android-ci.yml
+    with:
+      working-directory: fixtures/android-broken
+      # The failing unit test is enough; lint and packaging would add a minute for nothing.
+      gate: ./gradlew testDebugUnitTest
+  android-no-wrapper:
+    uses: ./.github/workflows/android-ci.yml
+    with:
+      working-directory: fixtures/android-no-wrapper
+  infra-bad-severity:
+    uses: ./.github/workflows/lint-infra.yml
+    with:
+      working-directory: fixtures/infra-ok
+      shellcheck-severity: all
+  infra-bad-shell:
+    uses: ./.github/workflows/lint-infra.yml
+    with:
+      working-directory: fixtures/infra-bad-shell
+  infra-bad-dockerfile:
+    uses: ./.github/workflows/lint-infra.yml
+    with:
+      working-directory: fixtures/infra-bad-dockerfile
+  infra-bad-compose:
+    uses: ./.github/workflows/lint-infra.yml
+    with:
+      working-directory: fixtures/infra-bad-compose
+  infra-bad-workflow:
+    uses: ./.github/workflows/lint-infra.yml
+    with:
+      working-directory: fixtures/infra-bad-workflow
+  infra-bad-ansible:
+    uses: ./.github/workflows/lint-infra.yml
+    with:
+      working-directory: fixtures/infra-bad-ansible

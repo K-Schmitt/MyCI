@@ -15,6 +15,22 @@ on:
         description: Follow the deployment until it ends and verify the deployed commit
         type: boolean
         default: true
+      environment:
+        description: GitHub environment the deploy job runs in (deployment history, protection rules)
+        type: string
+        default: production
+      healthcheck-url:
+        description: URL fetched after a verified deployment until it answers 200 (empty skips the check)
+        type: string
+        default: ""
+      healthcheck-expect:
+        description: Text the healthcheck body must contain, e.g. the commit SHA when the app exposes it
+        type: string
+        default: ""
+      healthcheck-timeout:
+        description: Seconds to wait for the healthcheck to pass
+        type: number
+        default: 120
     secrets:
       coolify-token:
         description: Coolify API token with read + deploy permissions only
@@ -26,17 +42,40 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Coolify is followed for up to 15 min, the healthcheck for up to healthcheck-timeout (≤ 900 s).
+    timeout-minutes: 30
+    environment:
+      name: ${{ inputs.environment }}
     concurrency:
       group: deploy-${{ github.repository }}
       cancel-in-progress: false
     steps:
+      - name: Validate inputs
+        id: validate
+        env:
+          HEALTHCHECK_URL: ${{ inputs.healthcheck-url }}
+          HEALTHCHECK_TIMEOUT: ${{ inputs.healthcheck-timeout }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          if [ -n "$HEALTHCHECK_URL" ] && ! [[ $HEALTHCHECK_URL =~ ^https?://[^[:space:]]+$ ]]; then
+            echo "::error::Input 'healthcheck-url' must be an http(s) URL without spaces, got: $(printf '%q' "$HEALTHCHECK_URL")"
+            exit 1
+          fi
+          if ! [[ $HEALTHCHECK_TIMEOUT =~ ^[0-9]+$ ]] || [ "$HEALTHCHECK_TIMEOUT" -lt 1 ] || [ "$HEALTHCHECK_TIMEOUT" -gt 900 ]; then
+            echo "::error::Input 'healthcheck-timeout' must be a whole number of seconds between 1 and 900, got: $(printf '%q' "$HEALTHCHECK_TIMEOUT")"
+            exit 1
+          fi
+
       - name: Deploy to Coolify
         id: deploy
         env:
           COOLIFY_URL: ${{ inputs.coolify-url }}
           APP_UUID: ${{ inputs.app-uuid }}
           WAIT: ${{ inputs.wait }}
+          HEALTHCHECK_URL: ${{ inputs.healthcheck-url }}
+          HEALTHCHECK_EXPECT: ${{ inputs.healthcheck-expect }}
+          HEALTHCHECK_TIMEOUT: ${{ inputs.healthcheck-timeout }}
           COOLIFY_TOKEN: ${{ secrets.coolify-token }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -44,13 +83,31 @@ jobs:
           api="${COOLIFY_URL%/}/api/v1"
           interval="${POLL_INTERVAL:-20}"
           timeout="${POLL_TIMEOUT:-900}"
+          health_interval="${HEALTH_INTERVAL:-5}"
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
           curl_opts=(--connect-timeout 10 --max-time "${CURL_MAX_TIME:-30}")
+          uuid=""
+          start=""
 
           fail() {
-            echo "::error::$*"
-            echo "❌ $*" >> "$summary"
+            local msg="$*"
+            if [ -n "$uuid" ]; then
+              msg="${msg} (deployment ${uuid}${start:+, $(( SECONDS - start ))s})"
+            fi
+            echo "::error::${msg}"
+            echo "❌ ${msg}" >> "$summary"
             exit 1
+          }
+          # Non-JSON bodies (an HTML error page) are quoted on one line, printable characters only.
+          snippet() {
+            printf '%s' "$1" | tr -cd '[:print:]' | head -c 200
+          }
+          # request <curl args...>: sets `code` and `body`; returns curl's own status.
+          request() {
+            local r
+            r=$(curl -sS "${curl_opts[@]}" -w '\n%{http_code}' "$@") || { code=000; body=""; return 1; }
+            code=${r##*$'\n'}
+            body=${r%$'\n'*}
           }
 
           # 1. Freshness: skip if the branch moved past the tested commit.
@@ -67,24 +124,20 @@ jobs:
           fi
 
           # 2. Trigger.
-          resp=$(curl -sS "${curl_opts[@]}" -X POST -w '\n%{http_code}' \
-              -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
-              "${api}/deploy?uuid=${APP_UUID}&force=false") \
+          request -X POST -H "Authorization: Bearer ${COOLIFY_TOKEN}" "${api}/deploy?uuid=${APP_UUID}&force=false" \
             || fail "Coolify unreachable at ${COOLIFY_URL}"
-          code=${resp##*$'\n'}
-          body=${resp%$'\n'*}
           case "$code" in
             200) ;;
             401) fail "Coolify rejected the token (401): invalid token or API access disabled" ;;
             403) fail "The Coolify token lacks the deploy permission (403)" ;;
             404) fail "Coolify application ${APP_UUID} not found (404)" ;;
             429) fail "The Coolify deployment queue is full (429); retry once queued deployments finish" ;;
-            *) fail "Coolify deploy request failed (HTTP ${code}): ${body:0:200}" ;;
+            *) fail "Coolify deploy request failed (HTTP ${code}): $(snippet "$body")" ;;
           esac
           uuid=$(printf '%s' "$body" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["deployments"][0]["deployment_uuid"])' 2>/dev/null) \
             || uuid=""
-          [ -n "$uuid" ] || fail "No deployment_uuid in Coolify response: ${body:0:200}"
+          [ -n "$uuid" ] || fail "No deployment_uuid in Coolify response: $(snippet "$body")"
           message=$(printf '%s' "$body" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["deployments"][0].get("message", ""))' 2>/dev/null) \
             || message=""
@@ -108,25 +161,21 @@ jobs:
             if (( SECONDS - start > timeout )); then
               fail "Timed out after ${timeout}s waiting for deployment ${uuid} (last status: ${status:-none}); it may still complete in Coolify"
             fi
-            if ! r=$(curl -sS "${curl_opts[@]}" -w '\n%{http_code}' \
-                -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
-                "${api}/deployments/${uuid}"); then
+            if ! request -H "Authorization: Bearer ${COOLIFY_TOKEN}" "${api}/deployments/${uuid}"; then
               echo "::warning::Coolify did not answer while following ${uuid}; retrying"
               sleep "$interval"
               continue
             fi
-            c=${r##*$'\n'}
-            b=${r%$'\n'*}
-            if [ "$c" != 200 ]; then
-              detail=$(printf '%s' "$b" \
+            if [ "$code" != 200 ]; then
+              detail=$(printf '%s' "$body" \
                 | python3 -c 'import json,sys; print(json.load(sys.stdin).get("message", ""))' 2>/dev/null) \
                 || detail=""
-              [ "$c" = 403 ] && fail "The Coolify token lacks the read permission (403): ${detail:-no detail}"
-              fail "Following deployment ${uuid} failed (HTTP ${c})${detail:+: ${detail}}"
+              [ "$code" = 403 ] && fail "The Coolify token lacks the read permission (403): ${detail:-no detail}"
+              fail "Following deployment ${uuid} failed (HTTP ${code})${detail:+: ${detail}}"
             fi
-            read -r status commit < <(printf '%s' "$b" \
+            read -r status commit < <(printf '%s' "$body" \
               | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d.get("commit") or "-")' 2>/dev/null) \
-              || fail "Unreadable deployment status: ${b:0:200}"
+              || fail "Unreadable deployment status: $(snippet "$body")"
             echo "$(( SECONDS - start ))s: ${status}"
             case "$status" in
               finished | failed | cancelled-by-user) break ;;
@@ -137,5 +186,28 @@ jobs:
           # 4. Verify outcome and commit.
           [ "$status" = finished ] || fail "Coolify deployment ${uuid} ended with status '${status}'"
           [ "$commit" = "$GITHUB_SHA" ] || fail "Coolify deployed ${commit} instead of the tested commit ${GITHUB_SHA}"
+
+          # 5. Optional healthcheck: Coolify's `finished` says the container started, not that it serves.
+          if [ -n "$HEALTHCHECK_URL" ]; then
+            health_start=$SECONDS
+            while :; do
+              request "$HEALTHCHECK_URL" 2>/dev/null || true
+              if [ "$code" != 200 ]; then
+                last="HTTP ${code}"
+              elif [ -n "$HEALTHCHECK_EXPECT" ] && [[ $body != *"$HEALTHCHECK_EXPECT"* ]]; then
+                last="HTTP 200, body without '${HEALTHCHECK_EXPECT}'"
+              else
+                echo "Healthcheck passed: ${HEALTHCHECK_URL} (HTTP 200${HEALTHCHECK_EXPECT:+, body contains the expected text})"
+                echo "✅ Healthcheck passed: \`${HEALTHCHECK_URL}\`" >> "$summary"
+                break
+              fi
+              if (( SECONDS - health_start >= HEALTHCHECK_TIMEOUT )); then
+                fail "Healthcheck ${HEALTHCHECK_URL} did not pass within ${HEALTHCHECK_TIMEOUT}s (last: ${last})"
+              fi
+              echo "$(( SECONDS - health_start ))s: healthcheck ${last}, retrying"
+              sleep "$health_interval"
+            done
+          fi
+
           echo "Deployed ${GITHUB_SHA:0:7} in $(( SECONDS - start ))s"
           echo "✅ Deployed \`${GITHUB_SHA:0:7}\` (deployment \`${uuid}\`, $(( SECONDS - start ))s)" >> "$summary"

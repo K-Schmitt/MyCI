@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Runs the exact `run:` scripts of node-ci.yml (detect, require, summary) against the fixtures.
+# Runs the exact `run:` scripts of node-ci.yml (validate, detect, require, scripts, summary)
+# against the fixtures.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+# shellcheck source=lib/check.sh
+. "$root/tests/lib/check.sh"
 wf="$root/.github/workflows/node-ci.yml"
-for step in detect require summary; do
+for step in validate detect require scripts summary; do
   python3 "$root/tests/lib/extract-step.py" "$wf" node-ci "$step" > "$work/$step.sh" || exit 1
 done
-
-failures=0
-total=0
 
 # run_step <step> <dir> <workdir-label> [VAR=value...]: sets $out, $code, $outputs, $summary
 run_step() {
@@ -26,22 +26,38 @@ run_step() {
   summary=$(cat "$work/summary")
 }
 
-check() { # <name> <condition-description> <command...>
-  local name=$1
-  shift
-  total=$((total + 1))
-  if "$@"; then
-    echo "PASS $name"
-  else
-    echo "FAIL $name"
-    printf '%s\n' "$out" "$outputs" "$summary" | sed 's/^/    | /'
-    failures=$((failures + 1))
-  fi
-}
-has() { grep -qF -- "$2" <<< "$1"; }
-
 fx="$root/fixtures"
 
+# --- validate ------------------------------------------------------------------------------
+v() { run_step validate "$fx/node-npm" fixtures/node-npm SCRIPTS=lint,typecheck,test,build REQUIRE=lint,build AUDIT=none BUILD_ENV= "$@"; }
+v
+check "validate: defaults pass and emit both script lists" eval '[ $code = 0 ] && grep -qx "names=lint typecheck test build" <<< "$outputs" && grep -qx "require=lint build" <<< "$outputs"'
+v SCRIPTS=" lint ,typecheck,, test,test ,build" "REQUIRE= lint , build ,"
+check "validate: both lists are trimmed, empties dropped, duplicates kept once, order kept" eval '[ $code = 0 ] && grep -qx "names=lint typecheck test build" <<< "$outputs" && grep -qx "require=lint build" <<< "$outputs"'
+v SCRIPTS="lint, test:coverage ,type-check,build.prod,"
+check "validate: script names with ':' '.' '-' pass" eval '[ $code = 0 ] && grep -qx "names=lint test:coverage type-check build.prod" <<< "$outputs"'
+v SCRIPTS='lint,te st'
+check "validate: scripts rejects 'te st'" eval '[ $code = 1 ] && has "$out" "Input '"'"'scripts'"'"'"'
+v SCRIPTS='lint;rm -rf /'
+check "validate: scripts rejects 'lint;rm -rf /'" eval '[ $code = 1 ] && has "$out" "Input '"'"'scripts'"'"'"'
+v REQUIRE='lint;rm -rf /'
+check "validate: require rejects 'lint;rm -rf /'" eval '[ $code = 1 ] && has "$out" "Input '"'"'require'"'"'"'
+v REQUIRE=
+check "validate: empty require is an empty list" eval '[ $code = 0 ] && grep -qx "require=" <<< "$outputs"'
+v AUDIT=hig
+check "validate: audit rejects 'hig'" eval '[ $code = 1 ] && has "$out" "Input '"'"'audit'"'"'"'
+v AUDIT=critical
+check "validate: audit accepts 'critical'" eval '[ $code = 0 ]'
+v WORKDIR=../outside
+check "validate: working-directory rejects '../outside'" eval '[ $code = 1 ] && has "$out" "Input '"'"'working-directory'"'"'"'
+v BUILD_ENV=$'A=1\nB=a=b c\n\nVITE_URL=https://x.example/?a=1&b=2\nNODE_OPTIONS=--max-old-space-size=4096'
+check "validate: env values with '=' spaces and URLs pass" eval '[ $code = 0 ]'
+v BUILD_ENV='NOEQUALS'
+check "validate: env rejects a line without '='" eval '[ $code = 1 ] && has "$out" "Input '"'"'env'"'"'"'
+v BUILD_ENV='1A=1'
+check "validate: env rejects a key starting with a digit" eval '[ $code = 1 ] && has "$out" "Input '"'"'env'"'"'"'
+
+# --- detect --------------------------------------------------------------------------------
 run_step detect "$fx/node-npm" fixtures/node-npm PNPM_VERSION=
 check "detect npm" eval '[ $code = 0 ] && has "$outputs" "pm=npm" && has "$outputs" "lockfile=fixtures/node-npm/package-lock.json" && has "$outputs" "nvmrc="'
 
@@ -67,25 +83,48 @@ echo 22 > "$work/nvm/.nvmrc"
 run_step detect "$work/nvm" sub/app PNPM_VERSION=
 check ".nvmrc is reported" eval '[ $code = 0 ] && grep -qx "nvmrc=sub/app/.nvmrc" <<< "$outputs"'
 
-run_step require "$fx/node-npm" fixtures/node-npm "REQUIRE=lint,build"
+# --- require (on the list validate emitted) -----------------------------------------------
+run_step require "$fx/node-npm" fixtures/node-npm "REQUIRE_NAMES=lint build"
 check "require satisfied" eval '[ $code = 0 ]'
 
-run_step require "$fx/node-npm" fixtures/node-npm "REQUIRE= lint , build ,"
-check "require tolerates spaces and trailing comma" eval '[ $code = 0 ]'
-
-run_step require "$fx/node-missing-script" fixtures/node-missing-script "REQUIRE=lint,typecheck,build"
+run_step require "$fx/node-missing-script" fixtures/node-missing-script "REQUIRE_NAMES=lint typecheck build"
 check "missing required scripts listed" eval '[ $code = 1 ] && has "$out" "Required package.json scripts missing: lint typecheck"'
 
-run_step require "$fx/node-missing-script" fixtures/node-missing-script "REQUIRE="
+run_step require "$fx/node-missing-script" fixtures/node-missing-script "REQUIRE_NAMES="
 check "empty require accepts anything" eval '[ $code = 0 ]'
 
-run_step summary "$fx/node-pnpm" fixtures/node-pnpm PM=pnpm \
-  "OUTCOMES=lint=success typecheck=success test=failure build=skipped"
+run_step require "$fx/node-npm" fixtures/node-npm "REQUIRE_NAMES=constructor"
+check "require: an Object.prototype key is not a script" eval '[ $code = 1 ] && has "$out" "missing: constructor"'
+
+# --- scripts (real npm on copies of the fixtures) ------------------------------------------
+cp -r "$fx/node-npm" "$work/npm"
+cp -r "$fx/node-broken" "$work/broken"
+cp -r "$fx/node-env" "$work/env"
+
+run_step scripts "$work/npm" npm PM=npm "NAMES=lint typecheck test build" BUILD_ENV=
+check "scripts: every script runs in order" eval '[ $code = 0 ] && grep -qx "results=lint=success typecheck=success test=success build=success" <<< "$outputs" && [ "$(grep -c "::group::npm run test" <<< "$out")" = 1 ]'
+
+run_step scripts "$work/broken" broken PM=npm "NAMES=lint typecheck test build" BUILD_ENV=
+check "scripts: first failure fails the step, the rest is skipped" eval '[ $code = 1 ] && has "$outputs" "test=failure build=skipped" && has "$out" "::error::Script '"'"'test'"'"' failed"'
+
+run_step scripts "$work/env" env PM=npm "NAMES=lint type-check test" BUILD_ENV=$'UNUSED=a=b c\n\nFIXTURE_FLAG=1'
+check "scripts: renamed script runs, absent script is reported not failed, env lines reach the script" eval '[ $code = 0 ] && grep -qx "results=lint=absent type-check=success test=success" <<< "$outputs"'
+
+run_step scripts "$work/env" env PM=npm NAMES=test BUILD_ENV=
+check "scripts: the env fixture fails without its variable" eval '[ $code = 1 ] && has "$outputs" "results=test=failure"'
+
+run_step scripts "$work/npm" npm PM=npm "NAMES=lint toString" BUILD_ENV=
+check "scripts: an Object.prototype key is absent, not run" eval '[ $code = 0 ] && grep -qx "results=lint=success toString=absent" <<< "$outputs"'
+
+# --- summary -------------------------------------------------------------------------------
+run_step summary "$fx/node-pnpm" fixtures/node-pnpm PM=pnpm "NAMES=lint typecheck test build" \
+  "RESULTS=lint=success typecheck=absent test=failure build=skipped"
 check "summary table" eval '[ $code = 0 ] && has "$summary" "| lint | ✅ passed |" && has "$summary" "| typecheck | ⚠️ absent |" && has "$summary" "| test | ❌ failed |" && has "$summary" "| build | ⏭️ not run |" && has "$summary" "Package manager: \`pnpm\`"'
 
-run_step summary "$fx/node-nolock" fixtures/node-nolock PM= \
-  "OUTCOMES=lint=skipped typecheck=skipped test=skipped build=skipped"
-check "summary when detection failed" eval '[ $code = 0 ] && has "$summary" "not detected" && has "$summary" "| lint | ⏭️ not run |"'
+run_step summary "$fx/node-nolock" fixtures/node-nolock PM= "NAMES=lint typecheck test build" "RESULTS="
+check "summary when detection failed" eval '[ $code = 0 ] && has "$summary" "not detected" && has "$summary" "| lint | ⏭️ not run |" && has "$summary" "| build | ⏭️ not run |"'
 
-echo "node-ci: $((total - failures))/$total passed"
-[ "$failures" -eq 0 ]
+run_step summary "$fx/node-nolock" fixtures/node-nolock PM= "NAMES=" "RESULTS="
+check "summary when validation failed lists nothing" eval '[ $code = 0 ] && has "$summary" "| Script | Result |"'
+
+report node-ci

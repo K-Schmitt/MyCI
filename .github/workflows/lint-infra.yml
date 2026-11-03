@@ -1,0 +1,228 @@
+name: lint-infra
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: Folder scanned for scripts, Dockerfiles, compose files, workflows and playbooks, relative to the repository root
+        type: string
+        default: .
+      shellcheck-severity:
+        description: Minimum shellcheck severity that fails the job (error, warning, info, style)
+        type: string
+        default: style
+      exclude:
+        description: Space-separated file or directory names skipped wherever they appear, in addition to .git .history node_modules target dist build .venv venv vendor gradlew mvnw
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  lint-infra:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: lint-infra-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs
+        id: validate
+        working-directory: .
+        env:
+          WORKDIR: ${{ inputs.working-directory }}
+          SEVERITY: ${{ inputs.shellcheck-severity }}
+          EXCLUDE: ${{ inputs.exclude }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          dir_re='^[A-Za-z0-9._][A-Za-z0-9._/-]*$'
+          if ! [[ $WORKDIR =~ $dir_re ]] || [[ /$WORKDIR/ == */../* ]]; then
+            echo "::error::Input 'working-directory' must be a relative path inside the repository, got: $(printf '%q' "$WORKDIR")"
+            exit 1
+          fi
+          case "$SEVERITY" in
+            error | warning | info | style) ;;
+            *)
+              echo "::error::Input 'shellcheck-severity' must be error, warning, info or style, got: $(printf '%q' "$SEVERITY")"
+              exit 1 ;;
+          esac
+          exclude_re='^[A-Za-z0-9_.][A-Za-z0-9._-]*( [A-Za-z0-9_.][A-Za-z0-9._-]*)*$'
+          if [ -n "$EXCLUDE" ] && ! [[ $EXCLUDE =~ $exclude_re ]]; then
+            echo "::error::Input 'exclude' must be file or directory names separated by single spaces, got: $(printf '%q' "$EXCLUDE")"
+            exit 1
+          fi
+
+      - name: Discover files
+        id: discover
+        env:
+          EXCLUDE: ${{ inputs.exclude }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          # Names skipped wherever they appear, files and directories alike (generated wrappers included).
+          skip=(.git .history node_modules target dist build .venv venv vendor gradlew mvnw)
+          read -ra extra <<< "$EXCLUDE"
+          skip+=("${extra[@]}")
+          skip_args=()
+          for name in "${skip[@]}"; do skip_args+=(-name "$name" -o); done
+          unset 'skip_args[-1]'
+          mapfile -t files < <(find . \( "${skip_args[@]}" \) -prune -o -type f -print | sed 's#^\./##' | sort)
+          shebang_re='^#!.*\b(ba)?sh\b'
+          shell=()
+          dockerfiles=()
+          compose=()
+          workflows=()
+          for f in "${files[@]}"; do
+            base=${f##*/}
+            case "$f" in
+              *.sh | *.bash) shell+=("$f"); continue ;;
+              .github/workflows/*.yml | .github/workflows/*.yaml) workflows+=("$f"); continue ;;
+            esac
+            case "$base" in
+              Dockerfile | Dockerfile.* | *.Dockerfile | Containerfile) dockerfiles+=("$f"); continue ;;
+              compose.yml | compose.yaml | docker-compose*.yml | docker-compose*.yaml) compose+=("$f"); continue ;;
+            esac
+            # Extension-less scripts: a sh/bash shebang in the first 80 bytes.
+            if [[ $base != *.* ]] && IFS= read -r -n 80 first < "$f" && [[ $first =~ $shebang_re ]]; then
+              shell+=("$f")
+            fi
+          done
+          # ansible-lint runs where the shallowest ansible.cfg lives.
+          ansible=""
+          for f in "${files[@]}"; do
+            case "$f" in
+              ansible.cfg) dir=. ;;
+              */ansible.cfg) dir=${f%/ansible.cfg} ;;
+              *) continue ;;
+            esac
+            if [ -z "$ansible" ] || [[ ${dir//[^\/]/} < ${ansible//[^\/]/} ]]; then ansible=$dir; fi
+          done
+          list() { # <name> <items...>: a multi-line output, one item per line, and its count
+            local name=$1
+            shift
+            {
+              echo "${name}<<MYCI_LIST"
+              [ $# -eq 0 ] || printf '%s\n' "$@"
+              echo "MYCI_LIST"
+              echo "${name}-count=$#"
+            } >> "$GITHUB_OUTPUT"
+            echo "${name}: $#"
+          }
+          list shell "${shell[@]}"
+          list dockerfiles "${dockerfiles[@]}"
+          list compose "${compose[@]}"
+          list workflows "${workflows[@]}"
+          echo "ansible=${ansible}" >> "$GITHUB_OUTPUT"
+          echo "ansible: ${ansible:-none}"
+
+      - name: shellcheck
+        id: shellcheck
+        if: steps.discover.outputs.shell != ''
+        env:
+          FILES: ${{ steps.discover.outputs.shell }}
+          SEVERITY: ${{ inputs.shellcheck-severity }}
+        run: |
+          set -euo pipefail
+          mapfile -t files <<< "$FILES"
+          docker run --rm -v "$PWD:/mnt" -w /mnt \
+            koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d \
+            -S "$SEVERITY" "${files[@]}"
+
+      - name: hadolint
+        id: hadolint
+        if: steps.discover.outputs.dockerfiles != ''
+        env:
+          FILES: ${{ steps.discover.outputs.dockerfiles }}
+        run: |
+          set -euo pipefail
+          mapfile -t files <<< "$FILES"
+          docker run --rm -v "$PWD:/mnt" -w /mnt \
+            hadolint/hadolint:v2.15.1@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d \
+            hadolint "${files[@]}"
+
+      - name: docker compose config
+        id: compose
+        if: steps.discover.outputs.compose != ''
+        env:
+          FILES: ${{ steps.discover.outputs.compose }}
+        run: |
+          set -euo pipefail
+          mapfile -t files <<< "$FILES"
+          status=0
+          for f in "${files[@]}"; do
+            echo "::group::docker compose -f ${f} config"
+            # Structure only: variables are not interpolated and env files are not read, since
+            # a repository commits neither its .env nor every ${VAR:?} value.
+            if ! (cd "$(dirname "$f")" && docker compose -f "$(basename "$f")" config --quiet --no-interpolate --no-env-resolution); then
+              echo "::error file=${f}::compose file is invalid (see the log above)"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$status"
+
+      - name: actionlint
+        id: actionlint
+        if: steps.discover.outputs.workflows != ''
+        env:
+          FILES: ${{ steps.discover.outputs.workflows }}
+        run: |
+          set -euo pipefail
+          mapfile -t files <<< "$FILES"
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -no-color "${files[@]}"
+
+      - name: ansible-lint
+        id: ansible-lint
+        if: steps.discover.outputs.ansible != ''
+        uses: ansible/ansible-lint@9bce2bfb8f4a984e6b13767bc0d6bf0a49492164 # v26.10.1
+        with:
+          working_directory: ${{ inputs.working-directory }}/${{ steps.discover.outputs.ansible }}
+
+      - name: Summary
+        id: summary
+        if: always()
+        env:
+          SHELL_COUNT: ${{ steps.discover.outputs.shell-count }}
+          DOCKERFILE_COUNT: ${{ steps.discover.outputs.dockerfiles-count }}
+          COMPOSE_COUNT: ${{ steps.discover.outputs.compose-count }}
+          WORKFLOW_COUNT: ${{ steps.discover.outputs.workflows-count }}
+          ANSIBLE: ${{ steps.discover.outputs.ansible }}
+          SHELLCHECK: ${{ steps.shellcheck.outcome }}
+          HADOLINT: ${{ steps.hadolint.outcome }}
+          COMPOSE: ${{ steps.compose.outcome }}
+          ACTIONLINT: ${{ steps.actionlint.outcome }}
+          ANSIBLE_LINT: ${{ steps.ansible-lint.outcome }}
+        run: |
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          {
+            echo "### lint-infra"
+            echo
+            echo "| Tool | Files | Result |"
+            echo "|---|---|---|"
+          } >> "$summary"
+          row() { # <tool> <files> <outcome>
+            local text
+            case "$3" in
+              success) text="✅ passed" ;;
+              failure) text="❌ failed" ;;
+              *) text="⏭️ not run" ;;
+            esac
+            echo "| $1 | $2 | ${text} |" >> "$summary"
+            echo "$1: $2 → ${text}"
+          }
+          row shellcheck "${SHELL_COUNT:-0}" "$SHELLCHECK"
+          row hadolint "${DOCKERFILE_COUNT:-0}" "$HADOLINT"
+          row "docker compose config" "${COMPOSE_COUNT:-0}" "$COMPOSE"
+          row actionlint "${WORKFLOW_COUNT:-0}" "$ACTIONLINT"
+          row ansible-lint "${ANSIBLE:-none}" "$ANSIBLE_LINT"

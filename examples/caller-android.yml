@@ -1,0 +1,21 @@
+# Copy to <your-project>/.github/workflows/ci.yml
+# Needs: the Gradle wrapper committed (gradlew, gradlew.bat, gradle/wrapper/).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    uses: K-Schmitt/MyCI/.github/workflows/android-ci.yml@v1
+    # with:
+    #   gate: ./gradlew assembleDebug check     # the default; your own gate goes here
+    #   java-version: "21"
+    #   timeout-minutes: 30
+  infra:
+    uses: K-Schmitt/MyCI/.github/workflows/lint-infra.yml@v1

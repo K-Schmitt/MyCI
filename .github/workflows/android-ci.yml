@@ -1,0 +1,135 @@
+name: android-ci
+
+on:
+  workflow_call:
+    inputs:
+      gate:
+        description: Command that is the project's quality gate; it must exit non-zero on failure
+        type: string
+        default: ./gradlew assembleDebug check
+      working-directory:
+        description: Directory containing settings.gradle(.kts) and the Gradle wrapper, relative to the repository root
+        type: string
+        default: .
+      java-version:
+        description: JDK version (Temurin) the build runs with
+        type: string
+        default: "21"
+      timeout-minutes:
+        description: Timeout of the job; a cold build with a large Robolectric suite needs the default
+        type: number
+        default: 30
+
+permissions:
+  contents: read
+
+jobs:
+  android-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    concurrency:
+      group: android-ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The gate runs the project's own build command; it never needs git credentials.
+          persist-credentials: false
+
+      - name: Validate inputs
+        id: validate
+        working-directory: .
+        # `java-version` and `gate` are not validated here: the first only reaches setup-java's
+        # own input, the second is the caller's command by design.
+        env:
+          WORKDIR: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          dir_re='^[A-Za-z0-9._][A-Za-z0-9._/-]*$'
+          if ! [[ $WORKDIR =~ $dir_re ]] || [[ /$WORKDIR/ == */../* ]]; then
+            echo "::error::Input 'working-directory' must be a relative path inside the repository, got: $(printf '%q' "$WORKDIR")"
+            exit 1
+          fi
+
+      - name: Detect Android project
+        id: detect
+        env:
+          WORKDIR: ${{ inputs.working-directory }}
+        run: |
+          set -euo pipefail
+          if [ ! -f settings.gradle.kts ] && [ ! -f settings.gradle ]; then
+            echo "::error::No settings.gradle(.kts) in '${WORKDIR}': not a Gradle project"
+            exit 1
+          fi
+          if [ ! -f gradlew ] || [ ! -f gradle/wrapper/gradle-wrapper.jar ] || [ ! -f gradle/wrapper/gradle-wrapper.properties ]; then
+            echo "::error::No Gradle wrapper in '${WORKDIR}': commit gradlew and gradle/wrapper/ (run: gradle wrapper) so CI builds with the Gradle you build with"
+            exit 1
+          fi
+          if [ ! -x gradlew ]; then
+            echo "::warning::gradlew is not executable; made executable for this run. Fix the repository with: git update-index --chmod=+x gradlew"
+            chmod +x gradlew
+          fi
+          version=$(sed -n 's#^distributionUrl=.*/gradle-\([0-9][^-]*\)-.*#\1#p' gradle/wrapper/gradle-wrapper.properties)
+          echo "gradle-version=${version:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "Gradle wrapper ${version:-unknown}"
+
+      - name: Set up Java
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+
+      - name: Set up Gradle
+        # Validates the wrapper jar against the published checksums and restores the Gradle cache;
+        # the cache is written from the default branch only.
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      - name: Run gate
+        id: gate
+        env:
+          GATE: ${{ inputs.gate }}
+        run: bash -euo pipefail -c "$GATE"
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: apk-${{ github.run_id }}
+          path: ${{ inputs.working-directory }}/**/build/outputs/apk/**/*.apk
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload reports
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-${{ github.run_id }}
+          path: ${{ inputs.working-directory }}/**/build/reports/**
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Summary
+        id: summary
+        if: always()
+        env:
+          GATE: ${{ inputs.gate }}
+          GATE_OUTCOME: ${{ steps.gate.outcome }}
+          JAVA_VERSION: ${{ inputs.java-version }}
+          GRADLE_VERSION: ${{ steps.detect.outputs.gradle-version }}
+        run: |
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          case "$GATE_OUTCOME" in
+            success) result="✅ passed" ;;
+            failure) result="❌ failed" ;;
+            *) result="⏭️ not run" ;;
+          esac
+          {
+            echo "### android-ci"
+            echo "Gate: \`${GATE}\` → ${result}"
+            echo
+            echo "Java \`${JAVA_VERSION}\` · Gradle \`${GRADLE_VERSION:-unknown}\`"
+          } >> "$summary"
+          echo "gate: ${result}"

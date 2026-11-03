@@ -1,0 +1,7 @@
+# `env_file: .env` points at a file that is never committed: lint-infra must still validate the file.
+services:
+  web:
+    image: nginx:1.27
+    env_file: .env
+    ports:
+      - "8080:80"

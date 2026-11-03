@@ -1,0 +1,12 @@
+{
+  "name": "fixture-node-vulnerable",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "lint": "node --check src/index.js",
+    "build": "node --check src/index.js"
+  },
+  "dependencies": {
+    "lodash": "4.17.20"
+  }
+}

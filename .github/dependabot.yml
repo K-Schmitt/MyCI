@@ -1,0 +1,12 @@
+# Keeps the SHA-pinned third-party actions current: Dependabot rewrites the SHA and its version comment.
+# Tool images pinned by digest inside `run:` steps (actionlint, hadolint, shellcheck) are bumped by hand.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns: ["*"]

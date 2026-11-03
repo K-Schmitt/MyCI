@@ -1,0 +1,4 @@
+#!/bin/bash
+# No extension: found through its shebang.
+set -euo pipefail
+printf 'running %s\n' "${1:-nothing}"

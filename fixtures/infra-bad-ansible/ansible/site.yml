@@ -1,0 +1,7 @@
+---
+- name: Run a shell command without changed_when
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Echo
+      ansible.builtin.shell: echo hi

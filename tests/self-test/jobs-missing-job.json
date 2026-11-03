@@ -1,0 +1,12 @@
+{
+  "jobs": [
+    {
+      "name": "rust-bad-os / validate",
+      "conclusion": "failure"
+    },
+    {
+      "name": "rust-bad-os / rust-ci",
+      "conclusion": "skipped"
+    }
+  ]
+}
