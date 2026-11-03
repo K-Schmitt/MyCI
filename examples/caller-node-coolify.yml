@@ -13,14 +13,30 @@ permissions:
 jobs:
   ci:
     uses: K-Schmitt/MyCI/.github/workflows/node-ci.yml@v1
+    # with:
+    #   scripts: lint,type-check,test,build    # your script names, in order
+    #   env: |                                 # public build-time values only
+    #     NEXT_PUBLIC_API_URL=https://api.example.com
+    #   audit: high                            # fail on vulnerable production dependencies
   docker:
     uses: K-Schmitt/MyCI/.github/workflows/docker-build.yml@v1
+    # with:
+    #   target: production                     # a stage of a multi-stage Dockerfile
+    #   build-args: |                          # public build-time values only
+    #     NEXT_PUBLIC_API_URL=https://api.example.com
+    #   smoke: docker run --rm -d -p 8080:3000 "$IMAGE" && sleep 3 && curl -fsS localhost:8080/health
+    #   push: ${{ github.event_name == 'push' }}   # needs `packages: write` on this job
+  infra:
+    # shellcheck, hadolint, docker compose config, actionlint, ansible-lint on what the repository holds
+    uses: K-Schmitt/MyCI/.github/workflows/lint-infra.yml@v1
   deploy:
-    needs: [ci, docker]
+    needs: [ci, docker, infra]
     if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
     uses: K-Schmitt/MyCI/.github/workflows/deploy-coolify.yml@v1
     with:
       coolify-url: ${{ vars.COOLIFY_URL }}
       app-uuid: ${{ vars.COOLIFY_APP_UUID }}
+      # healthcheck-url: https://www.example.com/api/health   # 200 expected once Coolify says finished
+      # environment: production                               # the GitHub environment the job runs in
     secrets:
       coolify-token: ${{ secrets.COOLIFY_TOKEN }}

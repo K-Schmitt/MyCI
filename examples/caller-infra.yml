@@ -1,0 +1,18 @@
+# Copy to <your-project>/.github/workflows/ci.yml
+# For a repository of scripts, Dockerfiles, compose files or Ansible playbooks: nothing to configure.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  infra:
+    uses: K-Schmitt/MyCI/.github/workflows/lint-infra.yml@v1
+    # with:
+    #   shellcheck-severity: warning     # style (default), info, warning or error
+    #   exclude: legacy third_party      # directory names skipped wherever they appear
