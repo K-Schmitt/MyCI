@@ -53,6 +53,15 @@ jobs:
       require: test
       apt-packages: figlet
 
+  npm-pg:
+    # A Postgres service and DATABASE_URL: the fixture's test:db writes and reads a table.
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-pg
+      scripts: test:db
+      require: test:db
+      postgres-version: "17"
+
   rust:
     uses: ./.github/workflows/rust-ci.yml
     with:
@@ -158,6 +167,8 @@ jobs:
             node-bad-env|Validate inputs
             node-bad-apt|Validate inputs
             node-apt-missing|Run scripts
+            node-pg-missing|Run scripts
+            node-bad-pg|Validate inputs
             node-audit-fail|Audit production dependencies
             docker-bad-target|Build image
             docker-bad-args|Validate inputs

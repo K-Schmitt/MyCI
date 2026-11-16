@@ -57,6 +57,20 @@ jobs:
       working-directory: fixtures/node-apt
       scripts: test
       require: test
+  node-pg-missing:
+    # The fixture self-test runs with `postgres-version: "17"`, without it.
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-pg
+      scripts: test:db
+      require: test:db
+  node-bad-pg:
+    # Refused by the validate job, before the service image would be pulled.
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-pg
+      scripts: test:db
+      postgres-version: 17; id
   node-audit-fail:
     uses: ./.github/workflows/node-ci.yml
     with:

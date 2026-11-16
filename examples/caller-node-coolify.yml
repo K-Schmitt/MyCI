@@ -19,6 +19,13 @@ jobs:
     #     NEXT_PUBLIC_API_URL=https://api.example.com
     #   audit: high                            # fail on vulnerable production dependencies
     #   apt-packages: ffmpeg                   # system tools the tests call
+  # db:                                       # tests against a real Postgres, in parallel with ci;
+  #                                           # add db to deploy's needs below
+  #   uses: K-Schmitt/MyCI/.github/workflows/node-ci.yml@v1
+  #   with:
+  #     scripts: test:db
+  #     require: test:db
+  #     postgres-version: "17"
   docker:
     uses: K-Schmitt/MyCI/.github/workflows/docker-build.yml@v1
     # with:
