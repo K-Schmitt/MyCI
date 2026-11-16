@@ -1,0 +1,6 @@
+{
+  "description": "Workflows GitHub Actions réutilisables (Node, Rust, Python, Android, Docker, lint d'infra) qui ne déploient sur Coolify qu'après un CI vert, et vérifient que le commit déployé est bien celui testé.",
+  "image": "docs/preview.png",
+  "status": "in-progress",
+  "language": "GitHub Actions"
+}
