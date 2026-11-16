@@ -37,6 +37,7 @@ push to main ──► node-ci ──┐
 | `scripts` | `lint,typecheck,test,build` | Comma-separated, run in this order; a script that does not exist is reported `absent`, not failed (name yours: `type-check,test:coverage,build`); the first failure stops the list |
 | `env` | `""` | One `KEY=VALUE` per line, exported for the scripts step only (`VITE_*`, `NEXT_PUBLIC_*`, `NODE_OPTIONS=--max-old-space-size=4096`): the install and the audit run without them. Public values only: a reusable workflow cannot read the caller's `env:`, and secrets never belong here |
 | `audit` | `none` | `low`, `moderate`, `high` or `critical` runs `npm audit --omit=dev` / `pnpm audit --prod` at that level right after the install |
+| `apt-packages` | `""` | Space-separated Debian packages installed before the dependencies (`apt-get install --no-install-recommends`), e.g. `ffmpeg` for tests that call it; names on one line, no version pins (`pkg=1.2`) |
 | `pnpm-version` | `""` | Only for pnpm projects without a `packageManager` field |
 | `working-directory` | `.` | Folder holding `package.json`; a relative path inside the repository |
 | `timeout-minutes` | `15` | For the whole job; a large test suite on a hosted runner may need more |

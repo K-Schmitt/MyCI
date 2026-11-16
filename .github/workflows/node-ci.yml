@@ -23,6 +23,10 @@ on:
         description: Fail on production dependencies with a known vulnerability of at least this severity (none, low, moderate, high, critical)
         type: string
         default: none
+      apt-packages:
+        description: Space-separated Debian packages installed before the dependencies (e.g. ffmpeg)
+        type: string
+        default: ""
       pnpm-version:
         description: pnpm version, used only when package.json has no packageManager field
         type: string
@@ -61,6 +65,7 @@ jobs:
           REQUIRE: ${{ inputs.require }}
           AUDIT: ${{ inputs.audit }}
           BUILD_ENV: ${{ inputs.env }}
+          APT_PACKAGES: ${{ inputs.apt-packages }}
         run: |
           set -euo pipefail
           export LC_ALL=C
@@ -102,6 +107,12 @@ jobs:
               exit 1
             fi
           done <<< "$BUILD_ENV"
+          # Same allow-list as rust-ci.yml's validate job: change both together.
+          apt_re='^[a-z0-9][a-z0-9+.:-]*( [a-z0-9][a-z0-9+.:-]*)*$'
+          if [ -n "$APT_PACKAGES" ] && ! [[ $APT_PACKAGES =~ $apt_re ]]; then
+            echo "::error::Input 'apt-packages' must be Debian package names separated by single spaces, got: $(printf '%q' "$APT_PACKAGES")"
+            exit 1
+          fi
           {
             echo "names=${names}"
             echo "require=${require}"
@@ -144,6 +155,18 @@ jobs:
             echo "nvmrc=$nvmrc"
           } >> "$GITHUB_OUTPUT"
           echo "Detected $pm (lockfile ${lockfile})"
+
+      - name: Install apt packages
+        # Same check and install as rust-ci.yml: change both together.
+        id: apt
+        if: inputs.apt-packages != ''
+        env:
+          APT_PACKAGES: ${{ inputs.apt-packages }}
+        run: |
+          set -euo pipefail
+          read -ra packages <<< "$APT_PACKAGES"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
 
       - name: Set up pnpm
         if: steps.detect.outputs.pm == 'pnpm'
