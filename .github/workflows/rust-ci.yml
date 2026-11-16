@@ -66,6 +66,7 @@ jobs:
             echo "::error::Input 'os' must be a non-empty JSON array of runner labels from ${allowed}, got: $(printf '%q' "$OS_INPUT")"
             exit 1
           fi
+          # Same allow-list as node-ci.yml's Validate inputs step: change both together.
           apt_re='^[a-z0-9][a-z0-9+.:-]*( [a-z0-9][a-z0-9+.:-]*)*$'
           if [ -n "$APT_PACKAGES" ] && ! [[ $APT_PACKAGES =~ $apt_re ]]; then
             echo "::error::Input 'apt-packages' must be Debian package names separated by single spaces, got: $(printf '%q' "$APT_PACKAGES")"
@@ -127,6 +128,7 @@ jobs:
           echo "Detected a pinned Rust project (cargo-deny: $has_deny)"
 
       - name: Install apt packages
+        # Same install as node-ci.yml: change both together.
         id: apt
         if: runner.os == 'Linux' && inputs.apt-packages != ''
         env:

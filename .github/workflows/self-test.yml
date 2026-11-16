@@ -44,6 +44,15 @@ jobs:
       working-directory: fixtures/node-pnpm
       require: lint,test,build
 
+  npm-apt:
+    # The test script calls figlet, absent from ubuntu-latest: node-apt-missing proves it.
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-apt
+      scripts: test
+      require: test
+      apt-packages: figlet
+
   rust:
     uses: ./.github/workflows/rust-ci.yml
     with:
@@ -147,6 +156,8 @@ jobs:
             node-env-missing|Run scripts
             node-bad-scripts|Validate inputs
             node-bad-env|Validate inputs
+            node-bad-apt|Validate inputs
+            node-apt-missing|Run scripts
             node-audit-fail|Audit production dependencies
             docker-bad-target|Build image
             docker-bad-args|Validate inputs

