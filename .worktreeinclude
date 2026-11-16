@@ -1,0 +1,5 @@
+# Untracked agent context copied into each new worktree (never .superpowers/sdd/:
+# the session start already reads the ledgers of every worktree).
+CLAUDE.md
+BACKLOG.md
+docs/superpowers/
