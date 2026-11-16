@@ -31,6 +31,10 @@ on:
         description: Directory containing package.json, relative to the repository root
         type: string
         default: .
+      timeout-minutes:
+        description: Timeout of the job
+        type: number
+        default: 15
 
 permissions:
   contents: read
@@ -38,7 +42,7 @@ permissions:
 jobs:
   node-ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     concurrency:
       group: node-ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}

@@ -39,6 +39,7 @@ push to main ──► node-ci ──┐
 | `audit` | `none` | `low`, `moderate`, `high` or `critical` runs `npm audit --omit=dev` / `pnpm audit --prod` at that level right after the install |
 | `pnpm-version` | `""` | Only for pnpm projects without a `packageManager` field |
 | `working-directory` | `.` | Folder holding `package.json`; a relative path inside the repository |
+| `timeout-minutes` | `15` | For the whole job; a large test suite on a hosted runner may need more |
 
 ### rust-ci inputs
 
