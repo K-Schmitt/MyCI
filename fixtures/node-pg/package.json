@@ -1,0 +1,8 @@
+{
+  "name": "fixture-node-pg",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test:db": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -c 'create table t (n int primary key); insert into t values (1); select n from t'"
+  }
+}

@@ -27,6 +27,10 @@ on:
         description: Space-separated Debian packages installed before the dependencies (e.g. ffmpeg)
         type: string
         default: ""
+      postgres-version:
+        description: Postgres major or major.minor started as a service (postgres:<v>-alpine, trust auth, database test) with DATABASE_URL set for the scripts; empty starts none
+        type: string
+        default: ""
       pnpm-version:
         description: pnpm version, used only when package.json has no packageManager field
         type: string
@@ -44,12 +48,52 @@ permissions:
   contents: read
 
 jobs:
+  validate:
+    # The service image is pulled before any step of node-ci runs, so postgres-version is
+    # checked here first. Skipped without it: plain callers get no extra job.
+    if: inputs.postgres-version != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      postgres-image: ${{ steps.postgres.outputs.image }}
+    steps:
+      - name: Validate inputs
+        id: postgres
+        env:
+          POSTGRES_VERSION: ${{ inputs.postgres-version }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          if ! [[ $POSTGRES_VERSION =~ ^[0-9]+(\.[0-9]+)?([a-z]+[0-9]*)?$ ]]; then
+            echo "::error::Input 'postgres-version' must be a Postgres version such as 17, 16.4 or 18rc1, got: $(printf '%q' "$POSTGRES_VERSION")"
+            exit 1
+          fi
+          echo "image=postgres:${POSTGRES_VERSION}-alpine" >> "$GITHUB_OUTPUT"
+          echo "Postgres service: postgres:${POSTGRES_VERSION}-alpine"
+
   node-ci:
+    needs: validate
+    # Runs when validate passed or was skipped (no postgres-version).
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     concurrency:
-      group: node-ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}
+      # scripts and postgres-version are in the group so a project's `ci` and `db` calls on
+      # one folder do not cancel each other on pull requests.
+      group: node-ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.working-directory }}-${{ inputs.scripts }}-${{ inputs.postgres-version }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    services:
+      postgres:
+        # An empty image starts no service.
+        image: ${{ needs.validate.outputs.postgres-image }}
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: test
+        ports: ["127.0.0.1:5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
@@ -227,8 +271,14 @@ jobs:
           PM: ${{ steps.detect.outputs.pm }}
           NAMES: ${{ steps.validate.outputs.names }}
           BUILD_ENV: ${{ inputs.env }}
+          POSTGRES_VERSION: ${{ inputs.postgres-version }}
         run: |
           set -uo pipefail
+          # Set before the caller's lines, which may override it; never exported empty.
+          if [ -n "${POSTGRES_VERSION:-}" ]; then
+            export DATABASE_URL=postgres://postgres@127.0.0.1:5432/test
+            echo "env: DATABASE_URL (Postgres ${POSTGRES_VERSION} service)"
+          fi
           # The caller's variables exist for this step only: the install above ran without them.
           while IFS= read -r line; do
             [ -n "$line" ] || continue

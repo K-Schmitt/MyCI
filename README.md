@@ -38,6 +38,7 @@ push to main ──► node-ci ──┐
 | `env` | `""` | One `KEY=VALUE` per line, exported for the scripts step only (`VITE_*`, `NEXT_PUBLIC_*`, `NODE_OPTIONS=--max-old-space-size=4096`): the install and the audit run without them. Public values only: a reusable workflow cannot read the caller's `env:`, and secrets never belong here |
 | `audit` | `none` | `low`, `moderate`, `high` or `critical` runs `npm audit --omit=dev` / `pnpm audit --prod` at that level right after the install |
 | `apt-packages` | `""` | Space-separated Debian packages installed before the dependencies (`apt-get install --no-install-recommends`), e.g. `ffmpeg` for tests that call it; names on one line, no version pins (`pkg=1.2`) |
+| `postgres-version` | `""` | `17` or `16.4` starts `postgres:<v>-alpine` as a service (trust auth, database `test`) and sets `DATABASE_URL=postgres://postgres@127.0.0.1:5432/test` for the scripts step (port bound on loopback); checked by a `validate` job first, which only runs when this input is set; an `env` line may override it. Call node-ci a second time for the database tests (`scripts: test:db`, `require: test:db`) so they run in parallel as their own check, and add that job to `deploy`'s `needs` |
 | `pnpm-version` | `""` | Only for pnpm projects without a `packageManager` field |
 | `working-directory` | `.` | Folder holding `package.json`; a relative path inside the repository |
 | `timeout-minutes` | `15` | For the whole job; a large test suite on a hosted runner may need more |
